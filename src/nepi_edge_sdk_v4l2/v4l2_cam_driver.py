@@ -24,7 +24,7 @@ class V4l2CamDriver(object):
     stdout,_ = p.communicate()
     if p.returncode != 0:
       raise Exception("Failed to list v4l2 devices: " + stdout)
-    #out = stdout.decode('UTF-8').splitlines()
+    
     out = stdout.splitlines()
 
     path_validated = False
@@ -74,7 +74,7 @@ class V4l2CamDriver(object):
     stdout,_ = p.communicate()
     if p.returncode != 0:
       return False, "Failed to query controls from v4l2 device"
-    #out = stdout.decode('UTF-8').splitlines()
+    
     out = stdout.splitlines()
 
     self.camera_controls = dict()
@@ -141,7 +141,7 @@ class V4l2CamDriver(object):
     stdout,_ = p.communicate()
     if p.returncode != 0:
       return False, "Failed to query video formats from v4l2 device"
-    #out = stdout.decode('UTF-8').splitlines()
+    
     out = stdout.splitlines()
 
     self.video_formats = list()
@@ -286,7 +286,7 @@ class V4l2CamDriver(object):
     stdout,_ = p.communicate()
     if p.returncode != 0:
       return False, {}
-    #out = stdout.decode('UTF-8').splitlines()
+    
     out = stdout.splitlines()
 
     video_settings_dict = dict()
