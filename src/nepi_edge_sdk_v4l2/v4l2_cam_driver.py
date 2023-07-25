@@ -193,9 +193,11 @@ class V4l2CamDriver(object):
         tmp_resolutions['framerates'].append(float(fps_val))
 
     if in_video_capture_format is True:
+      if tmp_resolutions:
+        tmp_format['resolutions'].append(tmp_resolutions)
       self.video_formats.append(tmp_format)
 
-    #print("Debugging (Video Formats): " + str(self.video_formats))
+    print("Debugging (Video Formats): " + str(self.video_formats))
     return True, "Success"
 
   def getAvailableScaledCameraControls(self):

@@ -44,11 +44,8 @@ class V4l2CameraNode:
             
         rospy.loginfo(self.node_name + ": ... Connected!")
 
-        if self.driver.hasAdjustableResolution():
-            self.createResolutionModeMapping()
-
-        if self.driver.hasAdjustableFramerate():
-            self.createFramerateModeMapping()
+        self.createResolutionModeMapping()
+        self.createFramerateModeMapping()
 
         idx_callback_names = {
             "Controls" : {
