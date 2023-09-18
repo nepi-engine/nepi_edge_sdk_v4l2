@@ -32,14 +32,12 @@ class V4l2CamDriver(object):
     nLines = len(out)
     for i in range(0, nLines):
       line = out[i].strip()
-      if line.endswith(':'):
+      if line.endswith(':'): # Start of a new block of devices
         tmp_device_type = line.split()[0]
       elif (tmp_device_type != None) and (line == device_path):
         path_validated = True # More verification to come
         self.device_type = tmp_device_type
         break
-      else:
-        tmp_device_type = None # Clear it for the next entry
 
     if not path_validated:
       raise Exception("Failed to find a camera at " + device_path)
@@ -90,10 +88,19 @@ class V4l2CamDriver(object):
               # ['brightness', '0x00980900', '(int)']
       param = out[i].split(':',1)[1].split()     
               # ['min=-64', 'max=64', 'step=1', 'default=0', 'value=0']
+
+      # Validate that this is a real settings list and skip it if not
+      if (len(setting) != 3):
+        continue
+      try:
+        a['bitName'] = int(setting[1], base=0)
+      except:
+        continue
+      setting_type = setting[2].strip("()")
+      if (not setting_type == "menu") and (not setting_type == "int") and (not setting_type == "bool"):
+        continue
       
-      # Add bitName and setting type to params dictionary 
-      a['bitName'] = int(setting[1], base=0)
-      a['type'] = setting[2].strip("()")
+      a['type'] = setting_type      
 
       # Put parameters into a dictionary
       for j in range(0, len(param)):
@@ -197,7 +204,7 @@ class V4l2CamDriver(object):
         tmp_format['resolutions'].append(tmp_resolutions)
       self.video_formats.append(tmp_format)
 
-    print("Debugging (Video Formats): " + str(self.video_formats))
+    #print("Debugging (Video Formats): " + str(self.video_formats))
     return True, "Success"
 
   def getAvailableScaledCameraControls(self):
@@ -311,7 +318,7 @@ class V4l2CamDriver(object):
   def getCurrentResolution(self):
     status, video_settings_dict = self.getCurrentVideoSettings()
     if status is False:
-      return status, {}
+      return status, {"width":0, "height":0}
     
     return True, {"width":video_settings_dict["width"], "height":video_settings_dict["height"]}
   
