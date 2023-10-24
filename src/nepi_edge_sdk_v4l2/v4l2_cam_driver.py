@@ -20,7 +20,8 @@ class V4l2CamDriver(object):
     # First check that the desired device exists:
     p = subprocess.Popen(self.v4l2ctl_prefix + ['--list-devices'],
                            stdout=subprocess.PIPE,
-                           stderr=subprocess.STDOUT)
+                           stderr=subprocess.STDOUT,
+                           text=True)
     stdout,_ = p.communicate()
     if p.returncode != 0:
       raise Exception("Failed to list v4l2 devices: " + stdout)
@@ -68,7 +69,8 @@ class V4l2CamDriver(object):
 
     p = subprocess.Popen(self.v4l2ctl_prefix + ['--list-ctrls-menu'],
                            stdout=subprocess.PIPE,
-                           stderr=subprocess.STDOUT)
+                           stderr=subprocess.STDOUT,
+                           text=True)
     stdout,_ = p.communicate()
     if p.returncode != 0:
       return False, "Failed to query controls from v4l2 device"
@@ -144,7 +146,8 @@ class V4l2CamDriver(object):
   def initVideoFormatDict(self):
     p = subprocess.Popen(self.v4l2ctl_prefix + ['--list-formats-ext'],
                            stdout=subprocess.PIPE,
-                           stderr=subprocess.STDOUT)
+                           stderr=subprocess.STDOUT,
+                           text=True)
     stdout,_ = p.communicate()
     if p.returncode != 0:
       return False, "Failed to query video formats from v4l2 device"
@@ -242,7 +245,8 @@ class V4l2CamDriver(object):
     stepped_val = raw_step * step
     p = subprocess.Popen(self.v4l2ctl_prefix + ['--set-ctrl', v4l2_setting_name + '=' + str(stepped_val)],
                            stdout=subprocess.PIPE,
-                           stderr=subprocess.STDOUT)
+                           stderr=subprocess.STDOUT,
+                           text=True)
     stdout,_ = p.communicate()
     if p.returncode != 0:
       return False, "Failed to set camera control to v4l2 device"
@@ -257,7 +261,8 @@ class V4l2CamDriver(object):
 
     p = subprocess.Popen(self.v4l2ctl_prefix + ['--get-ctrl', v4l2_setting_name],
                            stdout=subprocess.PIPE,
-                           stderr=subprocess.STDOUT)
+                           stderr=subprocess.STDOUT,
+                           text=True)
     stdout,_ = p.communicate()
     if p.returncode != 0:
       return -1.0, "Failed to get camera control value from v4l2 device"
@@ -290,7 +295,8 @@ class V4l2CamDriver(object):
   def getCurrentVideoSettings(self):
     p = subprocess.Popen(self.v4l2ctl_prefix + ['--get-fmt-video'],
                            stdout=subprocess.PIPE,
-                           stderr=subprocess.STDOUT)
+                           stderr=subprocess.STDOUT,
+                           text=True)
     stdout,_ = p.communicate()
     if p.returncode != 0:
       return False, {}
@@ -359,7 +365,8 @@ class V4l2CamDriver(object):
     resolution_cmd = "--set-fmt-video=width=" + str(resolution_dict["width"]) + ",height=" + str(resolution_dict["height"]) + ",pixelformat=" + format
     p = subprocess.Popen(self.v4l2ctl_prefix + [resolution_cmd],
                          stdout=subprocess.PIPE,
-                         stderr=subprocess.STDOUT)
+                         stderr=subprocess.STDOUT,
+                         text=True)
     stdout,_ = p.communicate()
     if p.returncode != 0:
       if lock_held:
@@ -418,7 +425,8 @@ class V4l2CamDriver(object):
 
     p = subprocess.Popen(self.v4l2ctl_prefix + ['--set-parm=' + str(max_fps)],
                          stdout=subprocess.PIPE,
-                         stderr=subprocess.STDOUT)
+                         stderr=subprocess.STDOUT,
+                         text=True)
     stdout,_ = p.communicate()
     if p.returncode != 0:
       if lock_held:
@@ -433,7 +441,8 @@ class V4l2CamDriver(object):
   def getFramerate(self):
     p = subprocess.Popen(self.v4l2ctl_prefix + ['--get-parm'],
                          stdout=subprocess.PIPE,
-                         stderr=subprocess.STDOUT)
+                         stderr=subprocess.STDOUT,
+                         text=True)
     stdout,_ = p.communicate()
     if p.returncode != 0:
       return False, "Failed to get framerate for v4l2 device: " + stdout
