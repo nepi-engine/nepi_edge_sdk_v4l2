@@ -170,23 +170,22 @@ class V4l2CamDriver(object):
         continue
 
       #print("Debugging: Processing " + key + ", " + value)
+      if key == 'Type':
+        if value == 'Video Capture':
+          in_video_capture_format = True
+        else:
+          in_video_capture_format = False
 
-      if key == 'Index':
+      elif key.startswith('['):
         # Add previous dictionary and start a new one
         if tmp_format:
           if tmp_resolutions: # Close out last resolution from previous index
             tmp_format['resolutions'].append(tmp_resolutions)
           self.video_formats.append(tmp_format)
           tmp_format = dict()
-        in_video_capture_format = False
-      elif key == 'Type':
-        if value == 'Video Capture':
-          in_video_capture_format = True
-        else:
-          in_video_capture_format = False
-      elif key == 'Pixel Format' and in_video_capture_format:
         tmp_format['format'] = value.split()[0].strip('\'')
-        tmp_format['resolutions'] = list()
+        tmp_format['resolutions'] = list()      
+      
       elif key == 'Size' and in_video_capture_format:
         if tmp_resolutions:
           # Add previous dictionary and start a new one
@@ -302,10 +301,12 @@ class V4l2CamDriver(object):
     nLines = len(out)
     for i in range(0, nLines):
       line = out[i].strip()
-      key, value = line.split(':')
-      key = key.strip()
-      value = value.strip()
-
+      tokens = line.split(':')
+      if (len(tokens) < 2) or (len(tokens[0]) == 0) or (len(tokens[1]) == 0):
+        continue
+      key = tokens[0].strip()
+      value = tokens[1].split()[0]
+      
       if key == 'Width/Height':
         width,height = value.split('/')
         video_settings_dict['width'] = int(width)
