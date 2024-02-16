@@ -179,6 +179,7 @@ catkin_package(
 
 catkin_install_python(PROGRAMS
   scripts/v4l2_camera_node.py
+  scripts/zed_camera_node.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 
