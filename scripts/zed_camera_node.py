@@ -262,7 +262,7 @@ class ZedCameraNode(object) :
     self.idx_capabilities_report.adjustable_contrast = True
     self.idx_capabilities_report.adjustable_brightness = True
     self.idx_capabilities_report.adjustable_thresholding = True
-    self.idx_capabilities_report.adjustable_range = False # Pending callback implementation
+    self.idx_capabilities_report.adjustable_range = True
     self.idx_capabilities_report.has_color_2d_image = True
     self.idx_capabilities_report.has_bw_2d_image = True
     self.idx_capabilities_report.has_depth_map = True
@@ -402,11 +402,9 @@ class ZedCameraNode(object) :
   ### callback to get and apply range window controls
   def idx_set_range_window_callback(self, range_window_msg):
     rospy.loginfo(range_window_msg)
-    self.idx_range_window = range_window_msg.range_window
-    # TODO: What impact will this have -- depth image colormap range, or something else?
-    # publish IDX status update
-    self.idx_status_msg.range_window.start_range = self.idx_range_window.start_range
-    self.idx_status_msg.range_window.stop_range = self.idx_range_window.stop_range  
+    
+    self.idx_status_msg.range_window.start_range = range_window_msg.start_range
+    self.idx_status_msg.range_window.stop_range = range_window_msg.stop_range  
     self.idx_status_pub_callback()
 
 
