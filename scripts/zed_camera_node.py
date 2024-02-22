@@ -142,6 +142,8 @@ class ZedCameraNode(object) :
     # This parameter should be automatically set by idx_sensor_mgr
     zed_type = rospy.get_param('~zed_type', 'zed2')
 
+    self.node_name = rospy.get_name().split('/')[-1]
+
     # Now assign values for the Zed ROS Wrapper topics
     ZED_BASE_NAMESPACE = rospy.get_namespace() + zed_type + "/zed_node/"
     # Zed control topics
@@ -307,7 +309,7 @@ class ZedCameraNode(object) :
           bridge = CvBridge()
           cv_image = bridge.imgmsg_to_cv2(self.color_2d_image_msg, "bgr8")
           # Saving image to file type
-          image_filename=self.SAVE_FOLDER + self.idx_save_data_prefix + dt_str + '_' + self.NEPI_IDX_SENSOR_NAME + '_2d_color_image.png'
+          image_filename=self.SAVE_FOLDER + self.idx_save_data_prefix + dt_str + '_' + self.node_name + '_2d_color_image.png'
           rospy.logdebug("Saving image to file")
           cv2.imwrite(image_filename,cv_image)
         if self.depth_image_msg is not None:
@@ -315,7 +317,7 @@ class ZedCameraNode(object) :
           bridge = CvBridge()
           cv_image = bridge.imgmsg_to_cv2(self.depth_image_msg, "bgr8")
           # Saving image to file type
-          image_filename=self.SAVE_FOLDER + self.idx_save_data_prefix + dt_str + '_' + self.NEPI_IDX_SENSOR_NAME + '_depth_image.png'
+          image_filename=self.SAVE_FOLDER + self.idx_save_data_prefix + dt_str + '_' + self.node_name + '_depth_image.png'
           rospy.logdebug("Saving image to file")
           cv2.imwrite(image_filename,cv_image)
       save_data_timer = 0
