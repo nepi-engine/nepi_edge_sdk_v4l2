@@ -111,7 +111,8 @@ class ZedCameraNode(object) :
   SENSOR_MAX_FRAMERATE_FPS = 30
   SENSOR_MIN_THRESHOLD = 1
   SENSOR_MAX_THRESHOLD = 100
-  SENSOR_MAX_RANGE_M = 20
+  DEFAULT_SENSOR_MIN_RANGE_M = 0
+  DEFAULT_SENSOR_MAX_RANGE_M = 20
 
   #Set Initialize IDX Parameters
   IDX_RES_MODE = 1
@@ -138,6 +139,9 @@ class ZedCameraNode(object) :
     ZED_DEPTH_MAP_TOPIC = ZED_BASE_NAMESPACE + "depth/depth_registered"
     ZED_POINTCLOUD_TOPIC = ZED_BASE_NAMESPACE + "point_cloud/cloud_registered"
     ZED_ODOM_TOPIC = ZED_BASE_NAMESPACE + "odom"
+
+    ZED_MIN_RANGE_PARAM = ZED_BASE_NAMESPACE + "depth/min_depth"
+    ZED_MAX_RANGE_PARAM = ZED_BASE_NAMESPACE + "depth/max_depth"
 
     # And IDX topics
     NEPI_IDX_SENSOR_NAME = zed_type + "_stereo_camera"
@@ -226,7 +230,9 @@ class ZedCameraNode(object) :
     self.idx_status_msg.thresholding = self.IDX_THRESHOLD_RATIO
     self.update_sensor_thresholding(self.IDX_THRESHOLD_RATIO)
     self.idx_status_msg.range_window.start_range = self.IDX_MIN_RANGE_RATIO 
-    self.idx_status_msg.range_window.stop_range = self.IDX_MAX_RANGE_RATIO  
+    self.idx_status_msg.range_window.stop_range = self.IDX_MAX_RANGE_RATIO
+    self.idx_status_msg.min_range_m = rospy.get_param(ZED_MIN_RANGE_PARAM, self.DEFAULT_SENSOR_MIN_RANGE_M)
+    self.idx_status_msg.max_range_m = rospy.get_param(ZED_MAX_RANGE_PARAM, self.DEFAULT_SENSOR_MAX_RANGE_M)
     self.idx_status_msg.frame_3d = "nepi_center_frame"
     self.idx_status_pub_callback()
 
@@ -422,8 +428,11 @@ class ZedCameraNode(object) :
     ##################################################
     # Turn depth_array_m into colored image and publish
     # Create thresholded and 255 scaled version
-    min_range_m=self.idx_status_msg.range_window.start_range * self.SENSOR_MAX_RANGE_M
-    max_range_m=self.idx_status_msg.range_window.stop_range * self.SENSOR_MAX_RANGE_M
+    min_available_range = self.idx_status_msg.min_range_m 
+    max_available_range = self.idx_status_msg.max_range_m
+    range_span_m = max_available_range - min_available_range
+    min_range_m=(self.idx_status_msg.range_window.start_range * (range_span_m)) + min_available_range
+    max_range_m=(self.idx_status_msg.range_window.stop_range * (range_span_m)) + min_available_range
     np_depth_array_scaled = np_depth_array_m
     np_depth_array_scaled[np_depth_array_scaled < min_range_m] = 0
     np_depth_array_scaled[np_depth_array_scaled > max_range_m] = 0
