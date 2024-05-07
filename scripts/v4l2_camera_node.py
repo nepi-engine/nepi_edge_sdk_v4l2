@@ -59,14 +59,17 @@ class V4l2CameraNode:
             "Controls" : {
                 # IDX Standard
                 # Mode controls need some intervention
-                "Resolution": self.setResolutionMode if self.driver.hasAdjustableResolution() else None,
-                "Framerate": self.setFramerateMode if self.driver.hasAdjustableFramerate() else None,
+                "Auto_Adjust": None, # No hardware level auto adjust defined
+                "Resolution": None, # self.setResolutionMode if self.driver.hasAdjustableResolution() else None,
+                "Framerate": None, # self.setFramerateMode if self.driver.hasAdjustableFramerate() else None,
                 # Other standard controls can pass right through to the driver (minor intervention for ROS logging via setDriverCameraControl)
-                "Contrast": lambda x: self.setDriverCameraControl("contrast", x) if self.driver.hasAdjustableCameraControl("contrast") else None,
-                "Brightness": lambda x: self.setDriverCameraControl("brightness", x) if self.driver.hasAdjustableCameraControl("brightness") else None,
-                "Thresholding": lambda x: self.setDriverCameraControl("saturation", x) if self.driver.hasAdjustableCameraControl("brightness") else None,
+                "Contrast": None, # lambda x: self.setDriverCameraControl("contrast", x) if self.driver.hasAdjustableCameraControl("contrast") else None,
+                "Brightness": None, # lambda x: self.setDriverCameraControl("brightness", x) if self.driver.hasAdjustableCameraControl("brightness") else None,
+                "Thresholding": None, # lambda x: self.setDriverCameraControl("saturation", x) if self.driver.hasAdjustableCameraControl("saturation") else None,
                 "Range": None, # No default, can be remapped though
             },
+            
+
             "Data" : {
                 # Data callbacks
                 "Color2DImg": self.getColorImg,
@@ -119,6 +122,7 @@ class V4l2CameraNode:
         # Launch the IDX interface --  this takes care of initializing all the camera settings from config. file
         rospy.loginfo(self.node_name + ": Launching NEPI IDX (ROS) interface...")
         self.idx_if = ROSIDXSensorIF(sensor_name=self.node_name,
+                                     setAutoAdjustCb=idx_callback_names["Controls"]["Auto_Adjust"],
                                      setResolutionModeCb=idx_callback_names["Controls"]["Resolution"], 
                                      setFramerateModeCb=idx_callback_names["Controls"]["Framerate"], 
                                      setContrastCb=idx_callback_names["Controls"]["Contrast"], 
