@@ -60,12 +60,12 @@ class V4l2CameraNode:
                 # IDX Standard
                 # Mode controls need some intervention
                 "Auto_Adjust": None, # No hardware level auto adjust defined
-                "Resolution": None, # self.setResolutionMode if self.driver.hasAdjustableResolution() else None,
-                "Framerate": None, # self.setFramerateMode if self.driver.hasAdjustableFramerate() else None,
+                "Resolution": self.setResolutionMode if self.driver.hasAdjustableResolution() else None,
+                "Framerate":  self.setFramerateMode if self.driver.hasAdjustableFramerate() else None,
                 # Other standard controls can pass right through to the driver (minor intervention for ROS logging via setDriverCameraControl)
-                "Contrast": None, # lambda x: self.setDriverCameraControl("contrast", x) if self.driver.hasAdjustableCameraControl("contrast") else None,
-                "Brightness": None, # lambda x: self.setDriverCameraControl("brightness", x) if self.driver.hasAdjustableCameraControl("brightness") else None,
-                "Thresholding": None, # lambda x: self.setDriverCameraControl("saturation", x) if self.driver.hasAdjustableCameraControl("saturation") else None,
+                "Contrast":  lambda x: self.setDriverCameraControl("contrast", x) if self.driver.hasAdjustableCameraControl("contrast") else None,
+                "Brightness": lambda x: self.setDriverCameraControl("brightness", x) if self.driver.hasAdjustableCameraControl("brightness") else None,
+                "Thresholding": lambda x: self.setDriverCameraControl("saturation", x) if self.driver.hasAdjustableCameraControl("saturation") else None,
                 "Range": None, # No default, can be remapped though
             },
             
@@ -122,12 +122,12 @@ class V4l2CameraNode:
         # Launch the IDX interface --  this takes care of initializing all the camera settings from config. file
         rospy.loginfo(self.node_name + ": Launching NEPI IDX (ROS) interface...")
         self.idx_if = ROSIDXSensorIF(sensor_name=self.node_name,
-                                     setAutoAdjustCb=idx_callback_names["Controls"]["Auto_Adjust"],
-                                     setResolutionModeCb=idx_callback_names["Controls"]["Resolution"], 
-                                     setFramerateModeCb=idx_callback_names["Controls"]["Framerate"], 
-                                     setContrastCb=idx_callback_names["Controls"]["Contrast"], 
-                                     setBrightnessCb=idx_callback_names["Controls"]["Brightness"], 
-                                     setThresholdingCb=idx_callback_names["Controls"]["Thresholding"], 
+                                     setAutoAdjustCb=None, # idx_callback_names["Controls"]["Auto_Adjust"],
+                                     setResolutionModeCb=None, #idx_callback_names["Controls"]["Resolution"], 
+                                     setFramerateModeCb=None, #idx_callback_names["Controls"]["Framerate"], 
+                                     setContrastCb=None, #idx_callback_names["Controls"]["Contrast"], 
+                                     setBrightnessCb=None, #idx_callback_names["Controls"]["Brightness"], 
+                                     setThresholdingCb=None, #idx_callback_names["Controls"]["Thresholding"], 
                                      setRangeCb=idx_callback_names["Controls"]["Range"], 
                                      getColor2DImgCb=idx_callback_names["Data"]["Color2DImg"], 
                                      stopColor2DImgAcquisitionCb=idx_callback_names["Data"]["StopColor2DImg"],
