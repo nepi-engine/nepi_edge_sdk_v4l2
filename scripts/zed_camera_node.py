@@ -221,6 +221,8 @@ class ZedCameraNode(object) :
     rospy.loginfo("Waiting for topic: " + ZED_DEPTH_MAP_TOPIC)
     wait_for_topic(ZED_DEPTH_MAP_TOPIC)
     # Initialize IDX status msg and sensor
+    self.idx_status_msg.idx_controls = True
+    self.idx_status_msg.auto = False
     self.idx_status_msg.resolution_mode = self.IDX_RES_MODE  # Not sure if this is adjustable
     self.idx_status_msg.framerate_mode = self.IDX_FRAMERATE_MODE # Not sure if this is adjustable
     self.idx_status_msg.brightness = self.IDX_BRIGHTNESS_RATIO
@@ -249,6 +251,7 @@ class ZedCameraNode(object) :
     rospy.Subscriber(NEPI_IDX_SAVE_DATA_RATE_TOPIC, SaveDataRate, self.idx_save_data_rate_callback)
     
     # Populate and advertise IDX Capability Report
+    self.idx_capabilities_report.has_auto_adjustment
     self.idx_capabilities_report.adjustable_resolution = False # Pending callback implementation
     self.idx_capabilities_report.adjustable_framerate = False # Pending callback implementation
     self.idx_capabilities_report.adjustable_contrast = True
