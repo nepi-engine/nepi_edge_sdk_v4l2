@@ -36,10 +36,6 @@ import cv2
 import math
 import tf
 
-from nepi_edge_sdk_base import nepi_nav
-from nepi_edge_sdk_base import nepi_img
-from nepi_edge_sdk_base import nepi_nex
-
 from datetime import datetime
 from std_msgs.msg import UInt8, Empty, String, Bool, Float32
 from sensor_msgs.msg import Image, PointCloud2

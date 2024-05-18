@@ -109,7 +109,10 @@ class V4l2CameraNode:
                 "Pointcloud": None, 
                 "StopPointcloud": None,
                 "PointcloudImg": None, 
-                "StopPointcloudImg": None
+                "StopPointcloudImg": None,
+                "GPS": None,
+                "Odom": None,
+                "Heading": None,
             }
         }
 
@@ -167,7 +170,10 @@ class V4l2CameraNode:
                                      getPointcloud=idx_callback_names["Data"]["Pointcloud"], 
                                      stopPointcloudAcquisition=idx_callback_names["Data"]["StopPointcloud"],
                                      getPointcloudImg=idx_callback_names["Data"]["PointcloudImg"], 
-                                     stopPointcloudImgAcquisition=idx_callback_names["Data"]["StopPointcloudImg"])
+                                     stopPointcloudImgAcquisition=idx_callback_names["Data"]["StopPointcloudImg"],
+                                     getGPSMsg=idx_callback_names["Data"]["GPS"],
+                                     getOdomImg=idx_callback_names["Data"]["Odom"],
+                                     getHeadingImg=idx_callback_names["Data"]["Heading"])
         rospy.loginfo(self.node_name + ": ... IDX interface running")
 
         # Update available IDX callbacks based on capabilities that the driver reports
