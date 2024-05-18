@@ -325,6 +325,24 @@ class V4l2CameraNode:
         err_str = ""
         return status, err_str
 
+    def applyControls2Frame(self,frame):
+        if self.current_controls.get("controls_enable"): 
+            resolution_ratio = self.current_controls.get("resolution_mode")/3
+            [frame,new_res] = nepi_img.adjust_resolution(frame, resolution_ratio)
+            if self.current_controls.get("auto_adjust") is False:
+                frame = nepi_img.adjust_brightness(frame,self.current_controls.get("brightness_ratio"))
+                
+                frame = nepi_img.adjust_contrast(frame,self.current_controls.get("contrast_ratio"))
+                frame = nepi_img.adjust_sharpness(frame,self.current_controls.get("threshold_ratio"))
+            else:
+                frame = nepi_img.adjust_auto(frame,0.3)
+            ##  Need to get current framerate setting
+            current_fps = self.current_fps
+            ##  Hard Coded for now
+            framerate_ratio = self.current_controls.get("framerate_mode")/3
+            [frame,new_rate] = nepi_img.adjust_framerate(frame, current_fps, framerate_ratio)
+        return frame
+
     def setDriverCameraControl(self, control_name, value):
         # Don't log too fast -- slider bars, etc. can cause this to get called many times in a row
         #rospy.loginfo_throttle(1.0, self.node_name + ": updating driver camera control " + control_name)
@@ -356,21 +374,8 @@ class V4l2CameraNode:
         else:
             ros_timestamp = rospy.Time.now()
         
-        if self.current_controls.get("controls_enable"): 
-            resolution_ratio = self.current_controls.get("resolution_mode")/3
-            [frame,new_res] = nepi_img.adjust_resolution(frame, resolution_ratio)
-            if self.current_controls.get("auto_adjust") is False:
-                frame = nepi_img.adjust_brightness(frame,self.current_controls.get("brightness_ratio"))
-                
-                frame = nepi_img.adjust_contrast(frame,self.current_controls.get("contrast_ratio"))
-                frame = nepi_img.adjust_sharpness(frame,self.current_controls.get("threshold_ratio"))
-            else:
-                frame = nepi_img.adjust_auto(frame,0.3)
-            ##  Need to get current framerate setting
-            current_fps = self.current_fps
-            ##  Hard Coded for now
-            framerate_ratio = self.current_controls.get("framerate_mode")/3
-            [frame,new_rate] = nepi_img.adjust_framerate(frame, current_fps, framerate_ratio)
+        # Apply controls
+        frame = self.applyControls2Frame(frame)
 
         # Make a copy for the bw thread to use rather than grabbing a new frame
         if self.bw_image_acquisition_running:
@@ -419,6 +424,8 @@ class V4l2CameraNode:
                 ros_timestamp = rospy.Time.from_sec(timestamp)
             else:
                 ros_timestamp = rospy.Time.now()
+            # Apply controls
+            frame = self.applyControls2Frame(frame)
         else:
             #rospy.logwarn("Debugging: getBWImg reusing")
             frame = self.cached_2d_color_frame.copy()
