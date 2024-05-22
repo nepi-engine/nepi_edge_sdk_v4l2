@@ -675,7 +675,16 @@ class ZedCameraNode(object):
             pc_last_stamp = ros_timestamp
             lock.release()
             if self.current_controls.get("controls_enable"):
-              pass # add range filter
+              start_range_ratio = self.current_controls.get("start_range_ratio")
+              stop_range_ratio = self.current_controls.get("stop_range_ratio")
+              if start_range_ratio > 0 or stop_range_ratio < 1:
+                o3d_pc = nepi_pc.rospc_to_o3dpc(ros_pc, remove_nans=False)
+                min_range_m = self.current_controls.get("min_range_m")
+                max_range_m = self.current_controls.get("max_range_m")
+                delta_range_m = max_range_m - min_range_m
+                range_clip_min_range_m = min_range_m + start_range_ratio  * delta_range_m
+                range_clip_max_range_m = min_range_m + stop_range_ratio  * delta_range_m
+                o3d_pc = nepi_pc.range_clip( o3d_pc, range_clip_min_range_m, range_clip_max_range_m)
           else:
             msg = "No new data for " + data_product + " available"
         else:
@@ -717,6 +726,17 @@ class ZedCameraNode(object):
             o3d_pc = nepi_pc.rospc_to_o3dpc(ros_pc, remove_nans=True)
             
             if self.current_controls.get("controls_enable"):
+              # Range Clip Pointcloud
+              start_range_ratio = self.current_controls.get("start_range_ratio")
+              stop_range_ratio = self.current_controls.get("stop_range_ratio")
+              if start_range_ratio > 0 or stop_range_ratio < 1:
+                min_range_m = self.current_controls.get("min_range_m")
+                max_range_m = self.current_controls.get("max_range_m")
+                delta_range_m = max_range_m - min_range_m
+                range_clip_min_range_m = min_range_m + start_range_ratio  * delta_range_m
+                range_clip_max_range_m = min_range_m + stop_range_ratio  * delta_range_m
+                o3d_pc = nepi_pc.range_clip( o3d_pc, range_clip_min_range_m, range_clip_max_range_m)
+              # Adjust Zoom Ratio for rendering
               res_scaler = float((self.current_controls.get("resolution_mode")) + 1) / float(4)
               img_width = int(self.Render_Img_Width * res_scaler)
               img_height = int(self.Render_Img_Height * res_scaler)
