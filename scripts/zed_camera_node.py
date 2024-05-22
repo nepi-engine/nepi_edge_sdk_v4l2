@@ -1,5 +1,4 @@
 #!/usr/bin/env python
-
 #
 # Copyright (c) 2024 Numurus, LLC <https://www.numurus.com>.
 #
@@ -9,35 +8,27 @@
 # License: 3-clause BSD, see https://opensource.org/licenses/BSD-3-Clause
 #
 
-# NEPI IDX Node for Zed cameras
-# TODO: Finish converting this to a real IDX node leveraging idx_sensor_if.py etc.
-
-###################################################
-# NEPI NavPose Axis Info
-# x+ axis is forward
-# y+ axis is right
-# z+ axis is down
-# roll: RHR about x axis
-# pitch: RHR about y axis
-# yaw: RHR about z axis
-#####################################################
-
-### Set the namespace before importing rospy
 import os
-os.environ["ROS_NAMESPACE"] = "/nepi/s2x"
-
+import sys
 import time
-import subprocess
-import os
+import math
 import rospy
+import threading
+import cv2
+import copy
+
+
+import subprocess
 import dynamic_reconfigure.client
 import numpy as np
-import cv2
-import math
 import tf
 
+from nepi_edge_sdk_base.idx_sensor_if import ROSIDXSensorIF
+
+from nepi_edge_sdk_base import nepi_ros
 from nepi_edge_sdk_base import nepi_nav
 from nepi_edge_sdk_base import nepi_img
+from nepi_edge_sdk_base import nepi_pc
 from nepi_edge_sdk_base import nepi_nex
 
 from datetime import datetime
@@ -47,461 +38,711 @@ from nepi_ros_interfaces.msg import IDXStatus, RangeWindow, SaveDataStatus, Save
 from nepi_ros_interfaces.srv import IDXCapabilitiesQuery, IDXCapabilitiesQueryResponse
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import NavSatFix
-from geometry_msgs.msg import Point, Pose, Quaternion, Twist, Vector3, PoseStamped, QuaternionStamped
 from dynamic_reconfigure.msg import Config
 from rospy.numpy_msg import numpy_msg
-from cv_bridge import CvBridge
 
-#########################################
-# ROS NAMESPACE SETUP
-#########################################
+class ZedCameraNode(object):
+    DEFAULT_NODE_NAME = "zed_stereo_camera" # zed replaced with zed_type once discovered
 
-NEPI_BASE_NAMESPACE = "/nepi/s2x/"
+    FACTORY_SETTINGS = nepi_nex.NONE_SETTINGS
 
-  #######################
-  # Process Functions
+    #Factory Control Values 
+    FACTORY_CONTROLS = dict( controls_enable = True,
+    auto_adjust = False,
+    brightness_ratio = 0.5,
+    contrast_ratio =  0.5,
+    threshold_ratio =  0.0,
+    resolution_mode = 3, # LOW, MED, HIGH, MAX
+    framerate_mode = 3, # LOW, MED, HIGH, MAX
+    start_range_ratio = 0.0, 
+    stop_range_ratio = 1.0,
+    min_range_m = 0.0,
+    max_range_m = 20.0,
+    zoom_ratio = .5, 
+    frame_id = 'nepi_center_frame' 
+    )
 
-### Function to Convert Quaternion Attitude to Roll, Pitch, Yaw Degrees
-def convert_quat2rpy(xyzw_attitude):
-  rpy_attitude_rad = tf.transformations.euler_from_quaternion(xyzw_attitude)
-  rpy_attitude_ned_deg = np.array(rpy_attitude_rad) * 180/math.pi
-  roll_deg = rpy_attitude_ned_deg[0] 
-  pitch_deg = rpy_attitude_ned_deg[1] 
-  yaw_deg = rpy_attitude_ned_deg[2]
-  return rpy_attitude_ned_deg
+    DEFAULT_CURRENT_FPS = 20 # Will be update later with actual
 
-### Function to Convert Roll, Pitch, Yaw Degrees to Quaternion Attitude
-def convert_rpy2quat(rpy_attitude_ned_deg):
-  roll_deg = rpy_attitude_ned_deg[0] 
-  pitch_deg = rpy_attitude_ned_deg[1] 
-  yaw_deg = rpy_attitude_ned_deg[2]
-  xyzw_attitude = tf.transformations.quaternion_from_euler(math.radians(roll_deg), math.radians(pitch_deg), math.radians(yaw_deg))
-  return xyzw_attitude
+    ZED_MIN_RANGE_M_OVERRIDES = { 'zed': .2, 'zedm': .15, 'zed2': .2, 'zedx': .2} 
+    ZED_MAX_RANGE_M_OVERRIDES = { 'zed':  15, 'zedm': 15, 'zed2': 20, 'zedx': 15} 
 
-### Function to find a topic
-def find_topic(topic_name):
-  topic = ""
-  topic_list=rospy.get_published_topics(namespace='/')
-  for topic_entry in topic_list:
-    if topic_entry[0].find(topic_name) != -1:
-      topic = topic_entry[0]
-  return topic
+    # Render Image from pointcloud
+    Render_Enable = True
+    Render_Img_Width = 1280
+    Render_Img_Height = 720
+    Render_Background = [0, 0, 0, 0] # background color rgba
+    Render_FOV = 60 # camera field of view in degrees
+    Render_Center = [3, 0, 0]  # look_at target
+    Render_Eye = [-5, -2.5, 0]  # camera position
+    Render_Up = [0, 0, 1]  # camera orientation
 
-### Function to check for a topic 
-def check_for_topic(topic_name):
-  topic_exists = True
-  topic=find_topic(topic_name)
-  if topic == "":
-    topic_exists = False
-  return topic_exists
 
-### Function to wait for a topic
-def wait_for_topic(topic_name):
-  topic = ""
-  while topic == "" and not rospy.is_shutdown():
-    topic=find_topic(topic_name)
-    time.sleep(.1)
-  return topic
+    zed_type = 'zed'
 
-class ZedCameraNode(object) :
-  #########################################
-  # DRIVER SETTINGS
-  #########################################
+    # Create shared class variables and thread locks 
+    color_img_msg = None
+    color_img_last_stamp = None
+    color_img_lock = threading.Lock()
+    bw_img_msg = None
+    bw_img_last_stamp = None
+    bw_img_lock = threading.Lock()
+    depth_map_msg = None
+    depth_map_last_stamp = None
+    depth_map_lock = threading.Lock()   
+    pc_msg = None
+    pc_last_stamp = None
+    pc_lock = threading.Lock()
 
-  #Define Sensor Native Parameters
-  SENSOR_RES_OPTION_LIST = [0,1,2,3]  # Maps to IDX Res Options 0-3
-  SENSOR_MAX_BRIGHTNESS = 8
-  SENSOR_MAX_CONTRAST = 8
-  SENSOR_MAX_FRAMERATE_FPS = 30
-  SENSOR_MIN_THRESHOLD = 1
-  SENSOR_MAX_THRESHOLD = 100
-  DEFAULT_SENSOR_MIN_RANGE_M = 0
-  DEFAULT_SENSOR_MAX_RANGE_M = 20
+    gps_msg = None
+    odom_msg = None
+    heading_msg = None
 
-  #Set Initialize IDX Parameters
-  IDX_RES_MODE = 1
-  IDX_FRAMERATE_MODE = 3
-  IDX_BRIGHTNESS_RATIO = 0.5
-  IDX_CONTRAST_RATIO = 0.5
-  IDX_THRESHOLD_RATIO = 0.5
-  IDX_MIN_RANGE_RATIO=0.02 
-  IDX_MAX_RANGE_RATIO=0.15 
-
-  def __init__(self):
-    # This parameter should be automatically set by idx_sensor_mgr
-    zed_type = rospy.get_param('~zed_type', 'zed2')
-
-    self.node_name = rospy.get_name().split('/')[-1]
-
-    # Now assign values for the Zed ROS Wrapper topics
-    ZED_BASE_NAMESPACE = rospy.get_namespace() + zed_type + "/zed_node/"
-    # Zed control topics
-    # ZED_PARAMETER_UPDATES_TOPIC = ZED_BASE_NAMESPACE + "parameter_updates"
-    # Zed data stream topics
-    ZED_COLOR_2D_IMAGE_TOPIC = ZED_BASE_NAMESPACE + "left/image_rect_color"
-    ZED_BW_2D_IMAGE_TOPIC = ZED_BASE_NAMESPACE + "left/image_rect_gray"
-    ZED_DEPTH_MAP_TOPIC = ZED_BASE_NAMESPACE + "depth/depth_registered"
-    ZED_POINTCLOUD_TOPIC = ZED_BASE_NAMESPACE + "point_cloud/cloud_registered"
-    ZED_ODOM_TOPIC = ZED_BASE_NAMESPACE + "odom"
-
-    ZED_MIN_RANGE_PARAM = ZED_BASE_NAMESPACE + "depth/min_depth"
-    ZED_MAX_RANGE_PARAM = ZED_BASE_NAMESPACE + "depth/max_depth"
-
-    # And IDX topics
-    NEPI_IDX_SENSOR_NAME = zed_type + "_stereo_camera"
-    NEPI_IDX_SENSOR_NAMESPACE = NEPI_BASE_NAMESPACE + NEPI_IDX_SENSOR_NAME
-    NEPI_IDX_NAMESPACE = NEPI_IDX_SENSOR_NAMESPACE + "/idx/"
-
-    ### NEPI IDX NavPose Publish Topic
-    NEPI_IDX_NAVPOSE_ODOM_TOPIC = NEPI_IDX_NAMESPACE + "odom"
-    # NEPI IDX capabilities query service
-    NEPI_IDX_CAPABILITY_REPORT_SERVICE = NEPI_IDX_NAMESPACE + "capabilities_query"
-    NEPI_IDX_CAPABILITY_NAVPOSE_TOPIC = NEPI_IDX_NAMESPACE + "navpose_support"
-    self.NEPI_IDX_CAPABILITY_NAVPOSE = 2 # Bit Mask [GPS,ODOM,HEADING]
-    # NEPI IDX status and control topics
-    NEPI_IDX_STATUS_TOPIC = NEPI_IDX_NAMESPACE + "status"
-    NEPI_IDX_SET_BRIGHTNESS_TOPIC = NEPI_IDX_NAMESPACE + "set_brightness"
-    NEPI_IDX_SET_CONTRAST_TOPIC = NEPI_IDX_NAMESPACE + "set_contrast"
-    #NEPI_IDX_SET_FRAMERATE_MODE_TOPIC = NEPI_IDX_NAMESPACE + "set_framerate_mode"
-    #NEPI_IDX_SET_RESOLUTION_MODE_TOPIC = NEPI_IDX_NAMESPACE + "set_resolution_mode"
-    NEPI_IDX_SET_THRESHOLDING_TOPIC = NEPI_IDX_NAMESPACE + "set_thresholding"
-    NEPI_IDX_SET_RANGE_WINDOW_TOPIC = NEPI_IDX_NAMESPACE + "set_range_window"
-    # NEPI IDX data stream topics
-    NEPI_IDX_COLOR_2D_IMAGE_TOPIC = NEPI_IDX_NAMESPACE + "color_2d_image"
-    NEPI_IDX_BW_2D_IMAGE_TOPIC = NEPI_IDX_NAMESPACE + "bw_2d_image"
-    NEPI_IDX_DEPTH_MAP_TOPIC = NEPI_IDX_NAMESPACE + "depth_map"
-    NEPI_IDX_DEPTH_IMAGE_TOPIC = NEPI_IDX_NAMESPACE + "depth_image"
-    NEPI_IDX_POINTCLOUD_TOPIC = NEPI_IDX_NAMESPACE + "pointcloud"
-    NEPI_IDX_POINTCLOUD_IMAGE_TOPIC = NEPI_IDX_NAMESPACE + "pointcloud_image"
-    # NEPI IDX save data subscriber topics
-    self.SAVE_FOLDER = "/mnt/nepi_storage/data/"
-    NEPI_IDX_SAVE_DATA_TOPIC = NEPI_BASE_NAMESPACE + "save_data"
-    NEPI_IDX_SAVE_DATA_PREFIX_TOPIC = NEPI_BASE_NAMESPACE + "save_data_prefix"
-    NEPI_IDX_SAVE_DATA_RATE_TOPIC = NEPI_BASE_NAMESPACE + "save_data_rate"
-
-    self.idx_capability_navpose_pub = rospy.Publisher(NEPI_IDX_CAPABILITY_NAVPOSE_TOPIC, UInt8, queue_size=1)
-    self.idx_navpose_odom_pub = rospy.Publisher(NEPI_IDX_NAVPOSE_ODOM_TOPIC, Odometry, queue_size=1)
-    self.idx_status_pub = rospy.Publisher(NEPI_IDX_STATUS_TOPIC, IDXStatus, queue_size=1, latch=True)
-    self.idx_color_2d_image_pub = rospy.Publisher(NEPI_IDX_COLOR_2D_IMAGE_TOPIC, Image, queue_size=1)
-    self.idx_bw_2d_image_pub = rospy.Publisher(NEPI_IDX_BW_2D_IMAGE_TOPIC, Image, queue_size=1)
-    self.idx_depth_map_pub = rospy.Publisher(NEPI_IDX_DEPTH_MAP_TOPIC, Image, queue_size=1)
-    self.idx_depth_image_pub = rospy.Publisher(NEPI_IDX_DEPTH_IMAGE_TOPIC, Image, queue_size=1)
-    self.idx_pointcloud_pub = rospy.Publisher(NEPI_IDX_POINTCLOUD_TOPIC, PointCloud2, queue_size=1)
-    self.idx_pointcloud_image_pub = rospy.Publisher(NEPI_IDX_POINTCLOUD_IMAGE_TOPIC, Image, queue_size=1)
-
-    self.idx_status_msg=IDXStatus()
-    self.idx_capabilities_report = IDXCapabilitiesQueryResponse()
-    self.idx_save_data = False
-    self.idx_save_data_prefix = ""
-    self.idx_save_data_rate = 1.0
-    self.idx_capability_pub_interval = 1
-    self.idx_save_data_status_pub_interval = 1
-    self.save_data_timer = 0.1
-
-    self.color_2d_image_msg = None
-    self.bw_2d_image_msg = None
-    self.depth_map_msg = None
-    self.depth_image_msg = None
-    self.pointcloud_msg = None
-
-    rospy.loginfo("Starting Initialization")
-
-    # Run the correct zed_ros_wrapper launch file
-    zed_launchfile = zed_type + '.launch'
-    zed_ros_wrapper_run_cmd = ['roslaunch', 'zed_wrapper', zed_launchfile]
-    # TODO: Some process management for the Zed ROS wrapper
-    self.zed_ros_wrapper_proc = subprocess.Popen(zed_ros_wrapper_run_cmd)
-
-    # Now that Zed SDK is started, we can set up the reconfig client
-    self.zed_dynamic_reconfig_client = dynamic_reconfigure.client.Client(ZED_BASE_NAMESPACE, timeout=30)
-
-    # Wait for zed odom topic (indicates Zed ROS Wrapper is running)
-    ##############################
-    rospy.loginfo("Waiting for ZED odom message to publish on " + ZED_ODOM_TOPIC)
-    # Publish IDX NavPose supported topics
-    wait_for_topic(ZED_ODOM_TOPIC)
-    rospy.Subscriber(ZED_ODOM_TOPIC, Odometry, self.idx_odom_topic_callback)
-    # Wait for zed depth topic
-    rospy.loginfo("Waiting for topic: " + ZED_DEPTH_MAP_TOPIC)
-    wait_for_topic(ZED_DEPTH_MAP_TOPIC)
-    # Initialize IDX status msg and sensor
-    self.idx_status_msg.idx_controls = True
-    self.idx_status_msg.auto = False
-    self.idx_status_msg.resolution_mode = self.IDX_RES_MODE  # Not sure if this is adjustable
-    self.idx_status_msg.framerate_mode = self.IDX_FRAMERATE_MODE # Not sure if this is adjustable
-    self.idx_status_msg.brightness = self.IDX_BRIGHTNESS_RATIO
-    self.update_sensor_brightness(self.idx_status_msg.brightness)
-    self.idx_status_msg.contrast = self.IDX_CONTRAST_RATIO
-    self.update_sensor_contrast(self.idx_status_msg.contrast)  
-    self.idx_status_msg.thresholding = self.IDX_THRESHOLD_RATIO
-    self.update_sensor_thresholding(self.IDX_THRESHOLD_RATIO)
-    self.idx_status_msg.range_window.start_range = self.IDX_MIN_RANGE_RATIO 
-    self.idx_status_msg.range_window.stop_range = self.IDX_MAX_RANGE_RATIO
-    self.idx_status_msg.min_range_m = rospy.get_param(ZED_MIN_RANGE_PARAM, self.DEFAULT_SENSOR_MIN_RANGE_M)
-    self.idx_status_msg.max_range_m = rospy.get_param(ZED_MAX_RANGE_PARAM, self.DEFAULT_SENSOR_MAX_RANGE_M)
-    self.idx_status_msg.frame_3d = "nepi_center_frame"
-    self.idx_status_pub_callback()
-
-    # Start IDX Subscribers
-    rospy.Subscriber(NEPI_IDX_SET_BRIGHTNESS_TOPIC, Float32, self.idx_set_brightness_callback)
-    rospy.Subscriber(NEPI_IDX_SET_CONTRAST_TOPIC, Float32, self.idx_set_contrast_callback)
-    #rospy.Subscriber(NEPI_IDX_SET_FRAMERATE_MODE_TOPIC, UInt8, idx_set_framerate_mode_callback)
-    #rospy.Subscriber(NEPI_IDX_SET_RESOLUTION_MODE_TOPIC, UInt8, idx_set_resolution_mode_callback)
-    rospy.Subscriber(NEPI_IDX_SET_THRESHOLDING_TOPIC, Float32, self.idx_set_thresholding_callback)
-    rospy.Subscriber(NEPI_IDX_SET_RANGE_WINDOW_TOPIC, RangeWindow, self.idx_set_range_window_callback)
-
-    rospy.Subscriber(NEPI_IDX_SAVE_DATA_TOPIC, SaveData, self.idx_save_data_callback)
-    rospy.Subscriber(NEPI_IDX_SAVE_DATA_PREFIX_TOPIC, String, self.idx_save_data_prefix_callback)
-    rospy.Subscriber(NEPI_IDX_SAVE_DATA_RATE_TOPIC, SaveDataRate, self.idx_save_data_rate_callback)
-    
-    # Populate and advertise IDX Capability Report
-    self.idx_capabilities_report.has_auto_adjustment
-    self.idx_capabilities_report.adjustable_resolution = False # Pending callback implementation
-    self.idx_capabilities_report.adjustable_framerate = False # Pending callback implementation
-    self.idx_capabilities_report.adjustable_contrast = True
-    self.idx_capabilities_report.adjustable_brightness = True
-    self.idx_capabilities_report.adjustable_thresholding = True
-    self.idx_capabilities_report.adjustable_range = True
-    self.idx_capabilities_report.has_color_2d_image = True
-    self.idx_capabilities_report.has_bw_2d_image = True
-    self.idx_capabilities_report.has_depth_map = True
-    self.idx_capabilities_report.has_depth_image = True 
-    self.idx_capabilities_report.has_pointcloud_image = False # TODO: Create this data
-    self.idx_capabilities_report.has_pointcloud = True
-    rospy.Service(NEPI_IDX_CAPABILITY_REPORT_SERVICE, IDXCapabilitiesQuery, self.idx_capabilities_query_callback)
-    rospy.Timer(rospy.Duration(self.idx_capability_pub_interval), self.idx_capability_pub_callback)
-    rospy.Timer(rospy.Duration(0.1), self.idx_save_data_pub_callback)
-    rospy.loginfo("Starting Zed IDX subscribers and publishers")
-    rospy.Subscriber(ZED_COLOR_2D_IMAGE_TOPIC, Image, self.color_2d_image_callback, queue_size = 1)
-    rospy.Subscriber(ZED_BW_2D_IMAGE_TOPIC, Image, self.bw_2d_image_callback, queue_size = 1)
-    rospy.Subscriber(ZED_DEPTH_MAP_TOPIC, numpy_msg(Image), self.depth_map_callback, queue_size = 1)
-    rospy.Subscriber(ZED_POINTCLOUD_TOPIC, PointCloud2, self.pointcloud_callback, queue_size = 1)
-    rospy.loginfo("Initialization Complete")
-
-    rospy.spin()
-
-  ##############################
-  # IDX Capabilities Topic Publishers
-  ### Callback to publish IDX capabilities lists
-  def idx_capability_pub_callback(self, _):
-    if not rospy.is_shutdown():
-      self.idx_capability_navpose_pub.publish(data=self.NEPI_IDX_CAPABILITY_NAVPOSE)
-
-  ##############################
-  # IDX Data Saver
-  ### Callback to save data at set rate
-  ### This is just a quick fix to add some save functionality.  Will save save same data if not updated
-  def idx_save_data_pub_callback(self, _):
-    save_data_interval = 1/self.idx_save_data_rate
-    if self.save_data_timer < save_data_interval:
-      self.save_data_timer = self.save_data_timer + 0.1
-    else:
-      if self.idx_save_data is True:
-        date_str=datetime.utcnow().strftime('%Y-%m-%d')
-        time_str=datetime.utcnow().strftime('%H%M%S')
-        ms_str =datetime.utcnow().strftime('%f')[:-3]
-        dt_str = (date_str + "T" + time_str + "." + ms_str)
-        if self.color_2d_image_msg is not None:
-          #Convert image from ros to cv2
-          bridge = CvBridge()
-          cv_image = bridge.imgmsg_to_cv2(self.color_2d_image_msg, "bgr8")
-          # Saving image to file type
-          image_filename=self.SAVE_FOLDER + self.idx_save_data_prefix + dt_str + '_' + self.node_name + '_2d_color_image.png'
-          rospy.logdebug("Saving image to file")
-          cv2.imwrite(image_filename,cv_image)
-        if self.depth_image_msg is not None:
-          #Convert image from ros to cv2
-          bridge = CvBridge()
-          cv_image = bridge.imgmsg_to_cv2(self.depth_image_msg, "bgr8")
-          # Saving image to file type
-          image_filename=self.SAVE_FOLDER + self.idx_save_data_prefix + dt_str + '_' + self.node_name + '_depth_image.png'
-          rospy.logdebug("Saving image to file")
-          cv2.imwrite(image_filename,cv_image)
-      save_data_timer = 0
-    #print(save_data_timer)
-
-  ### Callback to publish idx odom topic
-  def idx_odom_topic_callback(self, odom_msg):
-    # TODO: Need to convert data from zed odom ref frame to nepi ref frame
-    if not rospy.is_shutdown():
-      self.idx_navpose_odom_pub.publish(odom_msg)
-
-  #######################
-  # Driver Status Publishers Functions
-
-  ### function to publish IDX status message and updates
-  def idx_status_pub_callback(self):
-    if not rospy.is_shutdown():
-      self.idx_status_pub.publish(self.idx_status_msg)
-
-  #######################
-  # Driver Save Data Subscribers
-
-  ### callback to update save data setting
-  def idx_save_data_callback(self, save_data_msg):
-    self.idx_save_data = save_data_msg.save_continuous
-    rospy.loginfo("Updating save data to: " + str(self.idx_save_data))
-
-  ### callback to update save data prefix setting
-  def idx_save_data_prefix_callback(self, save_data_prefix_msg):
-    self.idx_save_data_prefix = save_data_prefix_msg.data
-    rospy.loginfo("Updating save data prefix to: " + self.idx_save_data_prefix)
-
-  ### callback to update save data rate setting
-  def idx_save_data_rate_callback(self, save_data_rate_msg):
-    self.idx_save_data_rate = save_data_rate_msg.save_rate_hz
-    rospy.loginfo("Updating save data rate to: " + str(self.idx_save_data_rate))
+    def __init__(self):
   
-  #######################
-  # Driver Control Subscribers Functions
+        # This parameter should be automatically set by idx_sensor_mgr
+        self.zed_type = rospy.get_param('~self.zed_type', 'zed2')
 
-  ### callback to get and apply brightness control
-  def idx_set_brightness_callback(self, brightness_msg):
-    rospy.loginfo(brightness_msg)
-    idx_brightness_ratio = brightness_msg.data
-    # udpate sensor native values
-    self.update_sensor_brightness(idx_brightness_ratio)
-    # publish IDX status update
-    self.idx_status_msg.brightness = idx_brightness_ratio
-    self.idx_status_pub_callback()
+        # Initialize class variables
+        self.factory_controls = self.FACTORY_CONTROLS
 
-  def update_sensor_brightness(self, brightness_ratio):
-    # Sensor Specific
-    sensor_brightness_val = int(float(self.SENSOR_MAX_BRIGHTNESS)*brightness_ratio)
-    self.zed_dynamic_reconfig_client.update_configuration({"brightness":sensor_brightness_val})
+        # Apply OVERRIDES
+        if self.zed_type in self.ZED_MIN_RANGE_M_OVERRIDES:
+          self.factory_controls['min_range_m'] = self.ZED_MIN_RANGE_M_OVERRIDES[self.zed_type]
+        if self.zed_type in self.ZED_MAX_RANGE_M_OVERRIDES:
+          self.factory_controls['max_range_m'] = self.ZED_MAX_RANGE_M_OVERRIDES[self.zed_type]
+
+        
+
+        self.current_controls = self.factory_controls # Updateded during initialization
+        self.current_fps = self.DEFAULT_CURRENT_FPS # Should be updateded when settings read
+
+        self.caps_settings = nepi_nex.TEST_CAP_SETTINGS # None # Updateded during initialization
+        self.factory_settings = nepi_nex.TEST_SETTINGS # None # Updateded during initialization
+        self.current_settings = nepi_nex.TEST_SETTINGS # None # Updateded during initialization
+
+
+        # Run the correct zed_ros_wrapper launch file
+        zed_launchfile = self.zed_type + '.launch'
+        zed_ros_wrapper_run_cmd = ['roslaunch', 'zed_wrapper', zed_launchfile]
+        # TODO: Some process management for the Zed ROS wrapper
+        self.zed_ros_wrapper_proc = subprocess.Popen(zed_ros_wrapper_run_cmd)
+
+        # Connect to Zed node
+        ZED_BASE_NAMESPACE = rospy.get_namespace() + self.zed_type + "/zed_node/"
+
+        # Now that Zed SDK is started, we can set up the reconfig client
+        self.zed_dynamic_reconfig_client = dynamic_reconfigure.client.Client(ZED_BASE_NAMESPACE, timeout=30)
+
+
+        # Zed control topics
+        # ZED_PARAMETER_UPDATES_TOPIC = ZED_BASE_NAMESPACE + "parameter_updates"
+        # Zed data stream topics
+        ZED_COLOR_2D_IMAGE_TOPIC = ZED_BASE_NAMESPACE + "left/image_rect_color"
+        ZED_BW_2D_IMAGE_TOPIC = ZED_BASE_NAMESPACE + "left/image_rect_gray"
+        ZED_DEPTH_MAP_TOPIC = ZED_BASE_NAMESPACE + "depth/depth_registered"
+        ZED_POINTCLOUD_TOPIC = ZED_BASE_NAMESPACE + "point_cloud/cloud_registered"
+        ZED_ODOM_TOPIC = ZED_BASE_NAMESPACE + "odom"
+        ZED_MIN_RANGE_PARAM = ZED_BASE_NAMESPACE + "depth/min_depth"
+        ZED_MAX_RANGE_PARAM = ZED_BASE_NAMESPACE + "depth/max_depth"
+
+        # Wait for zed camera topic to publish, then subscribe
+        rospy.loginfo("Waiting for topic: " + ZED_COLOR_2D_IMAGE_TOPIC)
+        nepi_ros.wait_for_topic(ZED_COLOR_2D_IMAGE_TOPIC)
+
+        rospy.loginfo("Starting Zed IDX subscribers and publishers")
+        rospy.Subscriber(ZED_COLOR_2D_IMAGE_TOPIC, Image, self.color_2d_image_callback, queue_size = 1)
+        rospy.Subscriber(ZED_BW_2D_IMAGE_TOPIC, Image, self.bw_2d_image_callback, queue_size = 1)
+        rospy.Subscriber(ZED_DEPTH_MAP_TOPIC, Image, self.depth_map_callback, queue_size = 1)
+        rospy.Subscriber(ZED_POINTCLOUD_TOPIC, PointCloud2, self.pointcloud_callback, queue_size = 1)
+        rospy.Subscriber(ZED_ODOM_TOPIC, Odometry, self.idx_odom_topic_callback)
+
+        # Launch the ROS node
+        rospy.loginfo("")
+        rospy.loginfo("********************")
+        rospy.loginfo("Starting " + self.DEFAULT_NODE_NAME.replace('zed',self.zed_type))
+        rospy.loginfo("********************")
+        rospy.loginfo("")
+        rospy.init_node(self.DEFAULT_NODE_NAME) # Node name could be overridden via remapping
+        self.node_name = rospy.get_name().split('/')[-1]
+        rospy.loginfo(self.node_name + ": ... Connected!")
+
+
+        idx_callback_names = {
+            "Controls" : {
+                # IDX Standard
+                "Controls_Enable":  self.setControlsEnable,
+                "Auto_Adjust":  self.setAutoAdjust,
+                "Brightness": self.setBrightness,
+                "Contrast":  self.setContrast,
+                "Thresholding": self.setThresholding,
+                "Resolution": self.setResolutionMode,
+                "Framerate":  self.setFramerateMode,
+                "Range": self.setRange,
+                "Zoom": self.setZoom
+            },
+            
+
+            "Data" : {
+                # Data callbacks
+                "Color2DImg": self.getColorImg,
+                "StopColor2DImg": self.stopColorImg,
+                "BW2DImg": self.getBWImg,
+                "StopBW2DImg": self.stopBWImg,
+                "DepthMap": self.getDepthMap, 
+                "StopDepthMap":  self.stopDepthMap,
+                "DepthImg": self.getDepthImg, 
+                "StopDepthImg":  self.stopDepthImg,
+                "Pointcloud":  self.getPointcloud, 
+                "StopPointcloud":  self.stopPointcloud,
+                "PointcloudImg":  self.getPointcloudImg, 
+                "StopPointcloudImg":  self.stopPointcloudImg,
+                "GPS": None,
+                "Odom": self.getOdom,
+                "Heading": None,
+            }
+        }
+
+        # IDX Remappings
+        # Now that we've initialized the callbacks table, can apply the remappings
+        idx_remappings = rospy.get_param('~idx_remappings', {})
+        rospy.loginfo(self.node_name + ': Establishing IDX remappings')
+        for from_name in idx_remappings:
+            to_name = idx_remappings[from_name]
+            if (from_name not in idx_callback_names["Controls"]) and (from_name not in idx_callback_names["Data"]):
+                rospy.logwarn('\tInvalid IDX remapping target: ' + from_name)
+            elif from_name in idx_callback_names["Controls"]:
+                if self.driver.hasAdjustableCameraControl(idx_remappings[to_name]) is False:
+                    rospy.logwarn('\tRemapping ' + from_name + ' to an unavailable control (' + to_name + ')')
+                else:
+                    rospy.loginfo('\t' + from_name + '-->' + to_name)
+                    idx_callback_names["Controls"][from_name] = lambda x: self.setDriverCameraControl(to_name, x)
+            elif (from_name in idx_callback_names["Controls"]):
+                # if (TODO: check data availability from driver):
+                #    rospy.logwarn('\tRemapping ' + from_name + ' to an unavailable data source (' + to_name + ')')
+                
+                # For now, this is unsupported
+                rospy.logwarn('\tRemapping IDX data for V4L2 devices not yet supported')
+            else:
+                idx_callback_names[from_name] = idx_callback_names[to_name]
+                rospy.loginfo('\t' + from_name + '-->' + to_name)
+
+
+        # Initialize controls and settings variables
+        self.factory_controls = self.FACTORY_CONTROLS
+        self.current_controls = self.factory_controls # Updateded during initialization
+        self.current_fps = self.DEFAULT_CURRENT_FPS # Should be updateded when settings read
+        self.caps_settings = self.getCapSettings() 
+        self.factory_settings = self.FACTORY_SETTINGS
+
+        # Launch the IDX interface --  this takes care of initializing all the camera settings from config. file
+        rospy.loginfo(self.node_name + ": Launching NEPI IDX (ROS) interface...")
+        self.idx_if = ROSIDXSensorIF(sensor_name=self.node_name,
+                                     factorySettings = self.factory_settings,
+                                     settingsUpdateFunction=self.settingsUpdateFunction,
+                                     getSettings=self.getSettings,
+                                     factoryControls = self.FACTORY_CONTROLS,
+                                     setControlsEnable = idx_callback_names["Controls"]["Controls_Enable"],
+                                     setAutoAdjust= idx_callback_names["Controls"]["Auto_Adjust"],
+                                     setResolutionMode=idx_callback_names["Controls"]["Resolution"], 
+                                     setFramerateMode=idx_callback_names["Controls"]["Framerate"], 
+                                     setContrast=idx_callback_names["Controls"]["Contrast"], 
+                                     setBrightness=idx_callback_names["Controls"]["Brightness"], 
+                                     setThresholding=idx_callback_names["Controls"]["Thresholding"], 
+                                     setRange=idx_callback_names["Controls"]["Range"], 
+                                     setZoom=idx_callback_names["Controls"]["Zoom"], 
+                                     getColor2DImg=idx_callback_names["Data"]["Color2DImg"], 
+                                     stopColor2DImgAcquisition=idx_callback_names["Data"]["StopColor2DImg"],
+                                     getBW2DImg=idx_callback_names["Data"]["BW2DImg"], 
+                                     stopBW2DImgAcquisition=idx_callback_names["Data"]["StopBW2DImg"],
+                                     getDepthMap=idx_callback_names["Data"]["DepthMap"], 
+                                     stopDepthMapAcquisition=idx_callback_names["Data"]["StopDepthMap"],
+                                     getDepthImg=idx_callback_names["Data"]["DepthImg"], 
+                                     stopDepthImgAcquisition=idx_callback_names["Data"]["StopDepthImg"],
+                                     getPointcloud=idx_callback_names["Data"]["Pointcloud"], 
+                                     stopPointcloudAcquisition=idx_callback_names["Data"]["StopPointcloud"],
+                                     getPointcloudImg=idx_callback_names["Data"]["PointcloudImg"], 
+                                     stopPointcloudImgAcquisition=idx_callback_names["Data"]["StopPointcloudImg"],
+                                     getGPSMsg=idx_callback_names["Data"]["GPS"],
+                                     getOdomMsg=idx_callback_names["Data"]["Odom"],
+                                     getHeadingMsg=idx_callback_names["Data"]["Heading"])
+        rospy.loginfo(self.node_name + ": ... IDX interface running")
+
+        # Update available IDX callbacks based on capabilities that the driver reports
+        self.logDeviceInfo()
+
+        # Now that all camera start-up stuff is processed, we can update the camera from the parameters that have been established
+        self.idx_if.updateFromParamServer()
+
+        # Now start the node
+        rospy.spin()
+
+    #**********************
+    # Zed camera data callbacks
+
+    # callback to get color 2d image data
+    def color_2d_image_callback(self, image_msg):
+      if self.color_img_lock.locked() is False:
+        self.color_img_lock.acquire()
+        self.color_img_msg = image_msg
+        self.color_img_lock.release()
+      else:
+        pass # skip this msg to ensure latest is cached when ready
+
+    # callback to get 2d image data
+    def bw_2d_image_callback(self, image_msg):
+      if self.bw_img_lock.locked() is False:
+        self.bw_img_lock.acquire()
+        self.bw_img_msg = image_msg
+        self.bw_img_lock.release()
+      else:
+        pass # skip this msg to ensure latest is cached when ready
+
+    # callback to get depthmap
+    def depth_map_callback(self, image_msg):
+      if self.depth_map_lock.locked() is False:
+        self.depth_map_lock.acquire()
+        self.depth_map_msg = image_msg
+        self.depth_map_lock.release()
+      else:
+        pass # skip this msg to ensure latest is cached when ready
+      self.depth_map_msg = image_msg
+
+
+    # callback to get and republish point_cloud and image
+    def pointcloud_callback(self, pointcloud_msg):
+      if self.pc_lock.locked() is False:
+        self.pc_lock.acquire()
+        self.pc_msg = pointcloud_msg
+        self.pc_lock.release()
+      else:
+        pass # skip this msg to ensure latest is cached when ready
+
+    # Callback to get odom data
+    def idx_odom_topic_callback(self, odom_msg):
+      self.odom_msg = odom_msg
+
+
+    #**********************
+    # IDX driver functions
+
+    def logDeviceInfo(self):
+        device_info_str = self.node_name + " info:\n"
+        rospy.loginfo(device_info_str)
+
+    def getCapSettings(self):
+        cap_settings = nepi_nex.NONE_SETTINGS
+        # Replace with get cap settings process
+        return cap_settings
+
+    def settingsUpdateFunction(self,setting):
+        success = False
+        # Add update setting process
+        success = True
+        return success
     
-  ### callback to get and apply contrast control
-  def idx_set_contrast_callback(self, contrast_msg):
-    rospy.loginfo(contrast_msg)
-    idx_contrast_ratio = contrast_msg.data
-    # udpate sensor native values
-    self.update_sensor_contrast(idx_contrast_ratio)
-    # publish IDX status update
-    self.idx_status_msg.contrast = idx_contrast_ratio
-    self.idx_status_pub_callback()
+    def getSettings(self):
+        settings = nepi_nex.NONE_SETTINGS
+        # Replace with get settings process
+        return settings
 
-  def update_sensor_contrast(self, contrast_ratio):
-    # Sensor Specific
-    sensor_contrast_val = int(float(self.SENSOR_MAX_CONTRAST)*contrast_ratio)
-    self.zed_dynamic_reconfig_client.update_configuration({"contrast":sensor_contrast_val})
+
+    def setControlsEnable(self, enable):
+        self.current_controls["controls_enable"] = enable
+        status = True
+        err_str = ""
+        return status, err_str
+        
+    def setAutoAdjust(self, enable):
+        ret = self.current_controls["auto_adjust"] = enable
+        status = True
+        err_str = ""
+        return status, err_str
+
+    def setBrightness(self, ratio):
+        if ratio > 1:
+            ratio = 1
+        elif ratio < 0:
+            ratio = 0
+        self.current_controls["brightness_ratio"] = ratio
+        status = True
+        err_str = ""
+        return status, err_str
+
+    def setContrast(self, ratio):
+        if ratio > 1:
+            ratio = 1
+        elif ratio < 0:
+            ratio = 0
+        self.current_controls["contrast_ratio"] = ratio
+        status = True
+        err_str = ""
+        return status, err_str
+
+    def setThresholding(self, ratio):
+        if ratio > 1:
+            ratio = 1
+        elif ratio < 0:
+            ratio = 0
+        self.current_controls["threshold_ratio"] = ratio
+        status = True
+        err_str = ""
+        return status, err_str
+
+    def setResolutionMode(self, mode):
+        if (mode > self.idx_if.RESOLUTION_MODE_MAX):
+            return False, "Invalid mode value"
+        self.current_controls["resolution_mode"] = mode
+        status = True
+        err_str = ""
+        return status, err_str
     
-  def idx_set_thresholding_callback(self, thresholding_msg):
-    idx_thresholding_ratio = thresholding_msg.data
-    # udpate sensor native values
-    self.update_sensor_thresholding(idx_thresholding_ratio)
-    # publish IDX status update
-    self.idx_status_msg.thresholding = idx_thresholding_ratio
-    self.idx_status_pub_callback()
+    def setFramerateMode(self, mode):
+        if (mode > self.idx_if.FRAMERATE_MODE_MAX):
+            return False, "Invalid mode value"
+        self.current_controls["framerate_mode"] = mode
+        status = True
+        err_str = ""
+        return status, err_str
+
+    def setRange(self, min_ratio, max_ratio):
+        if min_ratio > 1:
+            min_ratio = 1
+        elif min_ratio < 0:
+            min_ratio = 0
+        self.current_controls["start_range_ratio"] = min_ratio
+        if max_ratio > 1:
+            max_ratio = 1
+        elif max_ratio < 0:
+            max_ratio = 0
+        if min_ratio < max_ratio:
+          self.current_controls["stop_range_ratio"] = max_ratio
+          status = True
+          err_str = ""
+        else:
+          status = False
+          err_str = "Invalid Range Window"
+        return status, err_str
+
+    def setZoom(self, ratio):
+        if ratio > 1:
+            ratio = 1
+        elif ratio < 0:
+            ratio = 0
+        self.current_controls["zoom_ratio"] = ratio
+        status = True
+        err_str = ""
+        return status, err_str
+
+    def setDriverCameraControl(self, control_name, value):
+        pass # Need to implement
+        #return self.driver.setScaledCameraControl(control_name, value)
     
-  def update_sensor_thresholding(self, thresholding_ratio):
-    # Sensor specific
-    sensor_depth_confidence_val = int((float(self.SENSOR_MAX_THRESHOLD - self.SENSOR_MIN_THRESHOLD) * thresholding_ratio) + self.SENSOR_MIN_THRESHOLD)
-    self.zed_dynamic_reconfig_client.update_configuration({"depth_confidence":sensor_depth_confidence_val})
 
-  ### callback to get and apply range window controls
-  def idx_set_range_window_callback(self, range_window_msg):
-    rospy.loginfo(range_window_msg)
+    # Good base class candidate - Shared with ONVIF
+    def getColorImg(self):
+        # Set process input variables
+        data_product = "color_2d_image"
+        img_msg = self.color_img_msg
+        img_last_stamp = self.color_img_last_stamp
+        lock = self.color_img_lock
+        encoding = 'rgb8'
+
+        # Run get process
+        # Initialize some process return variables
+        status = False
+        msg = ""
+        ros_img = None
+        cv2_img = None
+        ros_timestamp = None
+        if img_msg is not None:
+          if img_msg.header.stamp != img_last_stamp:
+            lock.acquire()
+            ros_img = img_msg
+            ros_timestamp = img_msg.header.stamp
+            status = True
+            msg = ""
+            ros_timestamp = ros_img.header.stamp
+            if self.current_controls.get("controls_enable"):
+              cv2_img =  nepi_img.rosimg_to_cv2img(ros_img, encoding = encoding)
+              cv2_img = nepi_nex.applyIDXControls2Image(cv2_img,self.current_controls,self.current_fps)
+              #ros_img = nepi_img.cv2img_to_rosimg(cv2_img, encoding = encoding)
+            img_last_stamp = ros_timestamp
+            lock.release()
+          else:
+            msg = "No new data for " + data_product + " available"
+        else:
+          msg = "Received None type data for " + data_product + " process"
+        if cv2_img is not None:
+          return status, msg, cv2_img, ros_timestamp, encoding
+        else: 
+          return status, msg, ros_img, ros_timestamp, encoding
     
-    self.idx_status_msg.range_window.start_range = range_window_msg.start_range
-    self.idx_status_msg.range_window.stop_range = range_window_msg.stop_range  
-    self.idx_status_pub_callback()
-
-
-  #######################
-  # Driver Data Publishers Functions
-
-  ### callback to get and republish color 2d image
-  def color_2d_image_callback(self, image_msg):
-    # Publish to IDX namespace
-    self.color_2d_image_msg = image_msg
-    if not rospy.is_shutdown():
-      self.idx_color_2d_image_pub.publish(image_msg)
-
-  ### callback to get and republish bw 2d image
-  def bw_2d_image_callback(self, image_msg):
-    # Publish to IDX namespace
-    if not rospy.is_shutdown():
-      self.idx_bw_2d_image_pub.publish(image_msg)
-
-  ### callback to get depthmap, republish it, convert it to global float array of meter depths corrisponding to image pixel location
-  def depth_map_callback(self, depth_map_msg):
-    # Zed depth data is floats in m, but passed as 4 bytes each that must be converted to floats
-    # Use cv2_bridge() to convert the ROS image to OpenCV format
-    #Convert the depth 4xbyte data to global float meter array
-    cv2_bridge = CvBridge()
-    cv2_depth_image = cv2_bridge.imgmsg_to_cv2(depth_map_msg, desired_encoding="passthrough")
-    np_depth_array_m = (np.array(cv2_depth_image, dtype=np.float32)) # replace nan values
-    np_depth_array_m[np.isnan(np_depth_array_m)] = 0
-    ##################################################
-    # Turn depth_array_m into colored image and publish
-    # Create thresholded and 255 scaled version
-    min_available_range = self.idx_status_msg.min_range_m 
-    max_available_range = self.idx_status_msg.max_range_m
-    range_span_m = max_available_range - min_available_range
-    min_range_m=(self.idx_status_msg.range_window.start_range * (range_span_m)) + min_available_range
-    max_range_m=(self.idx_status_msg.range_window.stop_range * (range_span_m)) + min_available_range
-    np_depth_array_scaled = np_depth_array_m
-    np_depth_array_scaled[np_depth_array_scaled < min_range_m] = 0
-    np_depth_array_scaled[np_depth_array_scaled > max_range_m] = 0
-    np_depth_array_scaled=np_depth_array_scaled-min_range_m
-    max_value=np.max(np_depth_array_scaled)
-    np_depth_array_scaled=np.array(np.abs(np_depth_array_scaled-float(max_value)),np.uint8) # Reverse for colormaping
-    depth_scaler=max_range_m-min_range_m
-    np_depth_array_scaled = np.array(255*np_depth_array_m/depth_scaler,np.uint8)
-    ## Debug Code ###
-    ##cv2.imwrite('/mnt/nepi_storage/data/image_bw.jpg', np_depth_array_scaled)
-    ##print(np_depth_array_scaled.shape)
-    ##time.sleep(1)
-    #################
-    # Apply colormap
-    cv2_depth_image_color = cv2.applyColorMap(np_depth_array_scaled, cv2.COLORMAP_JET)
-    ## Debug Code ###
-    ##cv2.imwrite('/mnt/nepi_storage/data/image_color.jpg', im_color)
-    ##print(im_color.shape)
-    ##time.sleep(1)
-    #################
-    # Convert to cv2 image to Ros Image message
-    ros_depth_image = cv2_bridge.cv2_to_imgmsg(cv2_depth_image_color,"bgr8")
-    self.depth_image_msg = ros_depth_image
-    # Publish new image to ros
-    if not rospy.is_shutdown():
-      self.idx_depth_map_pub.publish(depth_map_msg)
-      self.idx_depth_image_pub.publish(ros_depth_image)
-
-  ### callback to get and republish point_cloud and image
-  def pointcloud_callback(self, pointcloud2_msg):
-    # Publish to IDX namespace
-    if not rospy.is_shutdown():
-        self.idx_pointcloud_pub.publish(pointcloud2_msg)
-
-  ### callback to provide capabilities report ###
-  def idx_capabilities_query_callback(self, _):
-    return self.idx_capabilities_report
-  
-  def __del__(self):
-    rospy.loginfo("Shutting down: Executing script cleanup actions")
-    # Unregister publishing topics
-    self.idx_color_2d_image_pub.unregister()
-    self.idx_bw_2d_image_pub.unregister()
-    self.idx_depth_image_pub.unregister()
-    self.idx_pointcloud_pub.unregister()
-    self.idx_pointcloud_image_pub.unregister()
-
-    self.zed_ros_wrapper_proc.terminate()
-
-
-### Script Entrypoint
-def startNode():
-  rospy.loginfo("Starting ZED IDX node")
-  rospy.init_node(name='zed')
+    # Good base class candidate - Shared with ONVIF
+    def stopColorImg(self):
+        ret = True
+        msg = "Success"
+        return ret,msg
     
-  # Run initialization processes and start rospy.spin() via constructor
-  node = ZedCameraNode()
+    # Good base class candidate - Shared with ONVIF
+    def getBWImg(self):
+        # Set process input variables
+        data_product = "bw_2d_image"
+        img_msg = self.bw_img_msg
+        img_last_stamp = self.bw_img_last_stamp
+        lock = self.bw_img_lock
+        encoding = "mono8"
 
-#########################################
-# Main
-#########################################
+        # Run get process
+        # Initialize some process return variables
+        status = False
+        msg = ""
+        ros_img = None
+        cv2_img = None
+        ros_timestamp = None
+        if img_msg is not None:
+          if img_msg.header.stamp != img_last_stamp:
+            lock.acquire()
+            ros_img = img_msg
+            ros_timestamp = img_msg.header.stamp
+            status = True
+            msg = ""
+            ros_timestamp = ros_img.header.stamp
+            if self.current_controls.get("controls_enable"):
+              cv2_img =  nepi_img.rosimg_to_cv2img(ros_img, encoding = encoding)
+              cv2_img = nepi_nex.applyIDXControls2Image(cv2_img,self.current_controls,self.current_fps)
+              #ros_img = nepi_img.cv2img_to_rosimg(cv2_img, encoding = encoding)
+            img_last_stamp = ros_timestamp
+            lock.release()
+          else:
+            msg = "No new data for " + data_product + " available"
+        else:
+          msg = "Received None type data for " + data_product + " process"
+        if cv2_img is not None:
+          return status, msg, cv2_img, ros_timestamp, encoding
+        else: 
+          return status, msg, ros_img, ros_timestamp, encoding
+    
+    # Good base class candidate - Shared with ONVIF
+    def stopBWImg(self):
+        ret = True
+        msg = "Success"
+        return ret,msg
 
+    def getDepthMap(self):
+        # Set process input variables
+        data_product = "depth_map"
+        img_msg = self.depth_map_msg
+        img_last_stamp = self.depth_map_last_stamp
+        lock = self.depth_map_lock
+        encoding = 'passthrough'
+        # Run get process
+        # Initialize some process return variables
+        status = False
+        msg = ""
+        cv2_img = None
+        ros_img = None
+        ros_timestamp = None
+        if img_msg is not None:
+          if img_msg.header.stamp != img_last_stamp:
+            lock.acquire()
+            status = True
+            msg = ""
+            ros_img = copy.deepcopy(img_msg)
+            ros_timestamp = ros_img.header.stamp
+            img_last_stamp = ros_timestamp
+            lock.release()
+            # ToDo - Add convert depth data back to updated range filtered ros_img
+            # ToDo: single shared process for depth to numpy array conversion and prcessing
+            '''
+            if self.current_controls.get("controls_enable"):
+              # Range adjust depth image bsed on IDX range_window controls
+              # Zed depth data is floats in m, but passed as 4 bytes each that must be converted to floats
+              # Use cv2_bridge() to convert the ROS image to OpenCV format
+              #Convert the depth 4xbyte data to global float meter array
+              cv2_depth_image = nepi_img.rosimg_to_cv2img(img_msg, encoding="passthrough")
+              depth_data = (np.array(cv2_depth_image, dtype=np.float32)) # replace nan values
+              depth_data[np.isnan(depth_data)] = 0
+              delta_range_m = self.current_controls.get("max_range_m") - self.current_controls.get("min_range_m")
+              min_range_filter_m = self.current_controls.get("start_range_ratio") * delta_range_m
+              max_range_filter_m = self.current_controls.get("stop_range_ratio") * delta_range_m
+              depth_data[depth_data < min_range_filter_m] = NaN
+              depth_data[depth_data > max_range_filter_m] = NaN
+
+              ros_img = nepi_img.cv2img_to_rosimg(cv2_depth_image,encoding)
+              ros_img.header = ros_img_header
+              '''
+            
+          else:
+            msg = "No new data for " + data_product + " available"
+        else:
+          msg = "Received None type data for " + data_product + " process"
+        if cv2_img is not None:
+          return status, msg, cv2_img, ros_timestamp, encoding
+        else: 
+          return status, msg, ros_img, ros_timestamp, encoding
+    
+    def stopDepthMap(self):
+        ret = True
+        msg = "Success"
+        return ret,msg
+
+
+    def getDepthImg(self):
+        # Set process input variables
+        data_product = "depth_image"
+        img_msg = self.depth_map_msg
+        img_last_stamp = self.depth_map_last_stamp
+        lock = self.depth_map_lock
+        encoding = 'bgr8'
+         # Run get process
+        # Initialize some process return variables
+        status = False
+        msg = ""
+        cv2_img = None
+        ros_img = None
+        ros_timestamp = None
+        if img_msg is not None:
+          if img_msg.header.stamp != img_last_stamp:
+            lock.acquire()
+            status = True
+            msg = ""
+            ros_img = copy.deepcopy(img_msg)
+            ros_timestamp = ros_img.header.stamp
+            img_last_stamp = ros_timestamp
+            lock.release()
+            if self.current_controls.get("controls_enable"):
+              # ToDo: single shared process for depth to numpy array conversion and prcessing
+              # Range adjust depth image bsed on IDX range_window controls
+              # Zed depth data is floats in m, but passed as 4 bytes each that must be converted to floats
+              # Use cv2_bridge() to convert the ROS image to OpenCV format
+              #Convert the depth 4xbyte data to global float meter array
+              cv2_depth_image = nepi_img.rosimg_to_cv2img(img_msg, encoding="passthrough")
+              depth_data = (np.array(cv2_depth_image, dtype=np.float32)) # replace nan values
+              depth_data[np.isnan(depth_data)] = 0
+              min_range_m = self.current_controls.get("min_range_m")
+              max_range_m = self.current_controls.get("max_range_m")
+              delta_range_m = max_range_m - min_range_m
+              min_range_filter_m = min_range_m + self.current_controls.get("start_range_ratio") * delta_range_m
+              max_range_filter_m = min_range_m + self.current_controls.get("stop_range_ratio") * delta_range_m
+              depth_data[depth_data < min_range_filter_m] = 0
+              depth_data[depth_data > max_range_filter_m] = 0
+              # Turn depth_array_m into colored image and publish
+              depth_data=depth_data-min_range_filter_m
+              depth_data[depth_data < 0] = max_range_filter_m #make zero values long range
+              delta_range_filter_m= max_range_filter_m - min_range_filter_m
+              depth_data = np.abs(depth_data - delta_range_filter_m) # Reverse for color
+              depth_data = np.array(255*depth_data/delta_range_filter_m,np.uint8) # Scale for bgr colormap
+              cv2_img = cv2.applyColorMap(depth_data, cv2.COLORMAP_JET)
+              #ros_img = nepi_img.cv2img_to_rosimg(cv2_depth_image,encoding)
+          else:
+            msg = "No new data for " + data_product + " available"
+        else:
+          msg = "Received None type data for " + data_product + " process"
+        if cv2_img is not None:
+          return status, msg, cv2_img, ros_timestamp, encoding
+        else: 
+          return status, msg, ros_img, ros_timestamp, encoding
+
+    
+    def stopDepthImg(self):
+        ret = True
+        msg = "Success"
+        return ret,msg
+
+    def getPointcloud(self):     
+        # Set process input variables
+        data_product = "pointcloud"
+        pc_msg = self.pc_msg
+        pc_last_stamp = self.pc_last_stamp
+        lock = self.pc_lock
+        # Run get process
+        # Initialize some process return variables
+        status = False
+        msg = ""
+        ros_pc = None
+        o3d_pc = None
+        ros_timestamp = None
+        ros_frame = None
+        if pc_msg is not None:
+          if pc_msg.header.stamp != pc_last_stamp:
+            lock.acquire()
+            ros_pc = pc_msg
+            ros_timestamp = pc_msg.header.stamp
+            ros_frame = pc_msg.header.frame_id
+            status = True
+            msg = ""
+            pc_last_stamp = ros_timestamp
+            lock.release()
+            if self.current_controls.get("controls_enable"):
+              pass # add range filter
+          else:
+            msg = "No new data for " + data_product + " available"
+        else:
+          msg = "Received None type data for " + data_product + " process"
+        if o3d_pc is not None:
+          return status, msg, o3d_pc, ros_timestamp, ros_frame
+        else: 
+          return status, msg, ros_pc, ros_timestamp, ros_frame
+
+    
+    def stopPointcloud(self):
+        ret = True
+        msg = "Success"
+        return ret,msg
+
+    def getPointcloudImg(self):
+        data_product = "pointcloud_image"
+        pc_msg = self.pc_msg
+        pc_last_stamp = self.pc_last_stamp
+        lock = self.pc_lock
+        encoding = 'bgr8'
+         # Run get process
+        # Initialize some process return variables
+        status = False
+        msg = ""
+        ros_img = None
+        ros_timestamp = None
+        ros_frame = None
+        if pc_msg is not None:
+          if pc_msg.header.stamp != pc_last_stamp:
+            lock.acquire()
+            status = True
+            msg = ""
+            ros_pc = copy.deepcopy(pc_msg)
+            ros_timestamp = ros_pc.header.stamp
+            ros_frame = pc_msg.header.frame_id
+            pc_last_stamp = ros_timestamp
+            lock.release()
+            o3d_pc = nepi_pc.rospc_to_o3dpc(ros_pc, remove_nans=True)
+            
+            if self.current_controls.get("controls_enable"):
+              res_scaler = float((self.current_controls.get("resolution_mode")) + 1) / float(4)
+              img_width = int(self.Render_Img_Width * res_scaler)
+              img_height = int(self.Render_Img_Height * res_scaler)
+              zoom_scaler = 1 - self.current_controls.get("zoom_ratio")
+              render_eye = [number*zoom_scaler for number in self.Render_Eye] # Apply IDX zoom control
+            else: 
+              img_width = self.Render_Img_Width * res_scaler
+              img_height = self.Render_Img_Height * res_scaler
+              render_eye = self.Render_Eye
+            if not rospy.is_shutdown():
+              o3d_img = nepi_pc.render_image(o3d_pc,img_width,img_height,
+                          self.Render_Background,self.Render_FOV,self.Render_Center,render_eye,self.Render_Up)
+              ros_img = nepi_pc.o3dimg_to_rosimg(o3d_img, stamp=ros_timestamp, frame_id=ros_frame)
+          else:
+            msg = "No new data for " + data_product + " available"
+        else:
+          msg = "Received None type data for " + data_product + " process"
+        return status, msg, ros_img, ros_timestamp, encoding
+    
+    def stopPointcloudImg(self):
+        ret = True
+        msg = "Success"
+        return ret,msg
+
+    def getOdom(self):
+        return self.odom_msg
+        
 if __name__ == '__main__':
-  startNode()
-
+    node = ZedCameraNode()

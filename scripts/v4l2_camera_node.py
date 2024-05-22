@@ -23,6 +23,8 @@ from nepi_edge_sdk_base import nepi_nex
 class V4l2CameraNode:
     DEFAULT_NODE_NAME = "v4l2_camera_node"
 
+    FACTORY_SETTINGS = nepi_nex.NONE_SETTINGS
+
     #Factory Control Values 
     FACTORY_CONTROLS = dict( controls_enable = True,
     auto_adjust = False,
@@ -31,25 +33,32 @@ class V4l2CameraNode:
     threshold_ratio =  0.0,
     resolution_mode = 3, # LOW, MED, HIGH, MAX
     framerate_mode = 3, # LOW, MED, HIGH, MAX
-    start_range_ratio = 0.0, 
-    stop_ranage_ratio = 1.0,
-    min_range_m = 0.0,
-    max_range_m = 1.0 
+    start_range_ratio = None, 
+    stop_range_ratio = None,
+    min_range_m = None,
+    max_range_m = None,
+    zoom_ratio = None, 
+    frame_id = None
     )
-    # Define class variables
-    factory_controls = FACTORY_CONTROLS
-    current_controls = FACTORY_CONTROLS # Updateded during initialization
-    current_fps = 20 # Updateded during initialization
-
-    caps_settings = nepi_nex.TEST_CAP_SETTINGS # None # Updateded during initialization
-    factory_settings = nepi_nex.TEST_SETTINGS # None # Updateded during initialization
-    current_settings = nepi_nex.TEST_SETTINGS # None # Updateded during initialization
  
+    DEFAULT_CURRENT_FPS = 20 # Will be update later with actual
+
     DRIVER_SPECIALIZATION_CONSTRUCTORS = {V4L2_GENERIC_DRIVER_ID: V4l2CamDriver} # Only the generic on at the moment
+
+    # Create threading locks, controls, and status
+    img_lock = threading.Lock()
+    color_image_acquisition_running = False
+    bw_image_acquisition_running = False
+    cached_2d_color_image = None
+    cached_2d_color_image_timestamp = None
 
     def __init__(self):
         # Launch the ROS node
+        rospy.loginfo("")
+        rospy.loginfo("********************")
         rospy.loginfo("Starting " + self.DEFAULT_NODE_NAME)
+        rospy.loginfo("********************")
+        rospy.loginfo("")
         rospy.init_node(self.DEFAULT_NODE_NAME) # Node name could be overridden via remapping
         self.node_name = rospy.get_name().split('/')[-1]
 
@@ -77,13 +86,9 @@ class V4l2CameraNode:
             
         rospy.loginfo(self.node_name + ": ... Connected!")
 
-        self.createResolutionModeMapping()
-        self.createFramerateModeMapping()
-
         idx_callback_names = {
             "Controls" : {
                 # IDX Standard
-                # Mode controls may need some intervention
                 "Controls_Enable":  self.setControlsEnable,
                 "Auto_Adjust":  self.setAutoAdjust,
                 "Brightness": self.setBrightness,
@@ -101,7 +106,6 @@ class V4l2CameraNode:
                 "StopColor2DImg": self.stopColorImg,
                 "BW2DImg": self.getBWImg,
                 "StopBW2DImg": self.stopBWImg,
-                # Following have no driver support, can be remapped though
                 "DepthMap": None, 
                 "StopDepthMap": None,
                 "DepthImg": None, 
@@ -118,38 +122,42 @@ class V4l2CameraNode:
 
         # IDX Remappings
         # Now that we've initialized the callbacks table, can apply the remappings
-##        idx_remappings = rospy.get_param('~idx_remappings', {})
-##        rospy.loginfo(self.node_name + ': Establishing IDX remappings')
-##        for from_name in idx_remappings:
-##            to_name = idx_remappings[from_name]
-##            if (from_name not in idx_callback_names["Controls"]) and (from_name not in idx_callback_names["Data"]):
-##                rospy.logwarn('\tInvalid IDX remapping target: ' + from_name)
-##            elif from_name in idx_callback_names["Controls"]:
-##                if self.driver.hasAdjustableCameraControl(idx_remappings[to_name]) is False:
-##                    rospy.logwarn('\tRemapping ' + from_name + ' to an unavailable control (' + to_name + ')')
-##                else:
-##                    rospy.loginfo('\t' + from_name + '-->' + to_name)
-##                    idx_callback_names["Controls"][from_name] = lambda x: self.setDriverCameraControl(to_name, x)
-##            elif (from_name in idx_callback_names["Controls"]):
-##                # if (TODO: check data availability from driver):
-##                #    rospy.logwarn('\tRemapping ' + from_name + ' to an unavailable data source (' + to_name + ')')
-##                
-##                # For now, this is unsupported
-##                rospy.logwarn('\tRemapping IDX data for V4L2 devices not yet supported')
-##            else:
-##                idx_callback_names[from_name] = idx_callback_names[to_name]
-##                rospy.loginfo('\t' + from_name + '-->' + to_name)
+        idx_remappings = rospy.get_param('~idx_remappings', {})
+        rospy.loginfo(self.node_name + ': Establishing IDX remappings')
+        for from_name in idx_remappings:
+            to_name = idx_remappings[from_name]
+            if (from_name not in idx_callback_names["Controls"]) and (from_name not in idx_callback_names["Data"]):
+                rospy.logwarn('\tInvalid IDX remapping target: ' + from_name)
+            elif from_name in idx_callback_names["Controls"]:
+                if self.driver.hasAdjustableCameraControl(idx_remappings[to_name]) is False:
+                    rospy.logwarn('\tRemapping ' + from_name + ' to an unavailable control (' + to_name + ')')
+                else:
+                    rospy.loginfo('\t' + from_name + '-->' + to_name)
+                    idx_callback_names["Controls"][from_name] = lambda x: self.setDriverCameraControl(to_name, x)
+            elif (from_name in idx_callback_names["Controls"]):
+                # if (TODO: check data availability from driver):
+                #    rospy.logwarn('\tRemapping ' + from_name + ' to an unavailable data source (' + to_name + ')')
+                
+                # For now, this is unsupported
+                rospy.logwarn('\tRemapping IDX data for V4L2 devices not yet supported')
+            else:
+                idx_callback_names[from_name] = idx_callback_names[to_name]
+                rospy.loginfo('\t' + from_name + '-->' + to_name)
 
-        # Create threading locks, controls, and status
-        self.img_lock = threading.Lock()
-        self.color_image_acquisition_running = False
-        self.bw_image_acquisition_running = False
-        self.cached_2d_color_frame = None
-        self.cached_2d_color_frame_timestamp = None
+
+        # Initialize controls and settings variables
+        self.factory_controls = self.FACTORY_CONTROLS
+        self.current_controls = self.factory_controls # Updateded during initialization
+        self.current_fps = self.DEFAULT_CURRENT_FPS # Should be updateded when settings read
+        self.caps_settings = getCapSettings() 
+        self.factory_settings = self.FACTORY_SETTINGS
 
         # Launch the IDX interface --  this takes care of initializing all the camera settings from config. file
         rospy.loginfo(self.node_name + ": Launching NEPI IDX (ROS) interface...")
         self.idx_if = ROSIDXSensorIF(sensor_name=self.node_name,
+                                     factorySettings = self.factory_settings,
+                                     settingsUpdateFunction=self.settingsUpdateFunction,
+                                     getSettings=self.getSettings,
                                      factoryControls = self.FACTORY_CONTROLS,
                                      setControlsEnable = idx_callback_names["Controls"]["Controls_Enable"],
                                      setAutoAdjust= idx_callback_names["Controls"]["Auto_Adjust"],
@@ -161,8 +169,8 @@ class V4l2CameraNode:
                                      setRange=idx_callback_names["Controls"]["Range"], 
                                      getColor2DImg=idx_callback_names["Data"]["Color2DImg"], 
                                      stopColor2DImgAcquisition=idx_callback_names["Data"]["StopColor2DImg"],
-                                     getGrayscale2DImg=idx_callback_names["Data"]["BW2DImg"], 
-                                     stopGrayscale2DImgAcquisition=idx_callback_names["Data"]["StopBW2DImg"],
+                                     getBW2DImg=idx_callback_names["Data"]["BW2DImg"], 
+                                     stopBW2DImgAcquisition=idx_callback_names["Data"]["StopBW2DImg"],
                                      getDepthMap=idx_callback_names["Data"]["DepthMap"], 
                                      stopDepthMapAcquisition=idx_callback_names["Data"]["StopDepthMap"],
                                      getDepthImg=idx_callback_names["Data"]["DepthImg"], 
@@ -172,8 +180,8 @@ class V4l2CameraNode:
                                      getPointcloudImg=idx_callback_names["Data"]["PointcloudImg"], 
                                      stopPointcloudImgAcquisition=idx_callback_names["Data"]["StopPointcloudImg"],
                                      getGPSMsg=idx_callback_names["Data"]["GPS"],
-                                     getOdomImg=idx_callback_names["Data"]["Odom"],
-                                     getHeadingImg=idx_callback_names["Data"]["Heading"])
+                                     getOdomMsg=idx_callback_names["Data"]["Odom"],
+                                     getHeadingMsg=idx_callback_names["Data"]["Heading"])
         rospy.loginfo(self.node_name + ": ... IDX interface running")
 
         # Update available IDX callbacks based on capabilities that the driver reports
@@ -212,66 +220,24 @@ class V4l2CameraNode:
         if (self.driver.hasAdjustableFramerate()):
             _, available_framerates = self.driver.getCurrentResolutionAvailableFramerates()
             device_info_str += "\tAvailable Framerates (current resolution): " + str(available_framerates) + "\n"
-
-        device_info_str += "\tResolution Modes:\n"
-        for mode in self.resolution_mode_map:
-            device_info_str += "\t\t" + str(mode) + ': ' + str(self.resolution_mode_map[mode]['width']) + 'x' + str(self.resolution_mode_map[mode]['height']) + "\n"
-        
-        device_info_str += "\tFramerate Modes (current resolution):\n"
-        for mode in self.framerate_mode_map:
-            device_info_str += "\t\t" + str(mode) + ': ' + str(self.framerate_mode_map[mode]) + "\n"
         
         rospy.loginfo(device_info_str)
 
-    def createResolutionModeMapping(self):
-        _, available_resolutions = self.driver.getCurrentFormatAvailableResolutions()
-        available_resolution_count = len(available_resolutions) 
-        # Check if this camera supports resolution adjustment
-        if (available_resolution_count == 0):
-            self.resolution_mode_map = {}
-            return
-        
-        #available_resolutions is a list of dicts, sorted by "width" from smallest to largest
-        # Distribute the modes evenly
-        resolution_mode_count = ROSIDXSensorIF.RESOLUTION_MODE_MAX + 1
-        # Ensure the highest resolution is available as "Ultra", others are spread evenly amongst remaining options
-        self.resolution_mode_map = {resolution_mode_count - 1:available_resolutions[available_resolution_count - 1]}
+    def getCapSettings(self):
+        cap_settings = nepi_nex.NONE_SETTINGS
+        # Replace with get cap settings process
+        return cap_settings
 
-        resolution_step = int(math.floor(available_resolution_count / resolution_mode_count))
-        if resolution_step == 0:
-            resolution_step = 1
-        
-        for i in range(1,resolution_mode_count):
-            res_index = (available_resolution_count - 1) - (i*resolution_step)
-            if res_index < 0:
-                res_index = 0
-            self.resolution_mode_map[resolution_mode_count - i - 1] = available_resolutions[res_index]
-
-    def createFramerateModeMapping(self):
-        _, available_framerates = self.driver.getCurrentResolutionAvailableFramerates()
-        
-        available_framerate_count = len(available_framerates)
-        if (available_framerate_count == 0):
-            self.framerate_mode_map = {}
-            return
-        
-        #rospy.loginfo("Debug: Creating Framerate Mode Mapping")
-
-        framerate_mode_count = ROSIDXSensorIF.FRAMERATE_MODE_MAX + 1
-        # Ensure the highest framerate is available as "Ultra", others are spread evenly amongst remaining options
-        self.framerate_mode_map = {framerate_mode_count - 1: available_framerates[available_framerate_count - 1]}
-        
-        framerate_step = int(math.floor(available_framerate_count / framerate_mode_count))
-        if framerate_step == 0:
-            framerate_step = 1
-
-        for i in range(1, framerate_mode_count):
-            framerate_index = (available_framerate_count - 1) - (i*framerate_step)
-            if framerate_index < 0:
-                framerate_index = 0
-            self.framerate_mode_map[framerate_mode_count - i - 1] = available_framerates[framerate_index]
-
-
+    def settingsUpdateFunction(self,setting):
+        success = False
+        # Add update setting process
+        success = True
+        return success
+    
+    def getSettings(self):
+        settings = nepi_nex.NONE_SETTINGS
+        # Replace with get settings process
+        return settings
     
     def setControlsEnable(self, enable):
         self.current_controls["controls_enable"] = enable
@@ -316,7 +282,7 @@ class V4l2CameraNode:
         return status, err_str
 
     def setResolutionMode(self, mode):
-        if (mode >= len(self.resolution_mode_map)):
+        if (mode > self.idx_if.RESOLUTION_MODE_MAX):
             return False, "Invalid mode value"
         self.current_controls["resolution_mode"] = mode
         status = True
@@ -324,30 +290,12 @@ class V4l2CameraNode:
         return status, err_str
     
     def setFramerateMode(self, mode):
-        if (mode >= len(self.framerate_mode_map)):
+        if (mode > self.idx_if.FRAMERATE_MODE_MAX):
             return False, "Invalid mode value"
         self.current_controls["framerate_mode"] = mode
         status = True
         err_str = ""
         return status, err_str
-
-    def applyControls2Frame(self,frame):
-        if self.current_controls.get("controls_enable"): 
-            resolution_ratio = self.current_controls.get("resolution_mode")/3
-            [frame,new_res] = nepi_img.adjust_resolution(frame, resolution_ratio)
-            if self.current_controls.get("auto_adjust") is False:
-                frame = nepi_img.adjust_brightness(frame,self.current_controls.get("brightness_ratio"))
-                
-                frame = nepi_img.adjust_contrast(frame,self.current_controls.get("contrast_ratio"))
-                frame = nepi_img.adjust_sharpness(frame,self.current_controls.get("threshold_ratio"))
-            else:
-                frame = nepi_img.adjust_auto(frame,0.3)
-            ##  Need to get current framerate setting
-            current_fps = self.current_fps
-            ##  Hard Coded for now
-            framerate_ratio = self.current_controls.get("framerate_mode")/3
-            [frame,new_rate] = nepi_img.adjust_framerate(frame, current_fps, framerate_ratio)
-        return frame
 
     def setDriverCameraControl(self, control_name, value):
         # Don't log too fast -- slider bars, etc. can cause this to get called many times in a row
@@ -356,6 +304,7 @@ class V4l2CameraNode:
     
     # Good base class candidate - Shared with ONVIF
     def getColorImg(self):
+        encoding = "bgr8"
         self.img_lock.acquire()
         # Always try to start image acquisition -- no big deal if it was already started; driver returns quickly
         ret, msg = self.driver.startImageAcquisition()
@@ -368,7 +317,7 @@ class V4l2CameraNode:
         timestamp = None
         
         start = time.time()
-        frame, timestamp, ret, msg = self.driver.getImage()
+        cv2_img, timestamp, ret, msg = self.driver.getImage()
         stop = time.time()
         #print('GI: ', stop - start)
         if ret is False:
@@ -381,17 +330,16 @@ class V4l2CameraNode:
             ros_timestamp = rospy.Time.now()
         
         # Apply controls
-        frame = self.applyControls2Frame(frame)
+        if self.current_controls.get("controls_enable") and cv2_img is not None:
+          cv2_img = nepi_nex.applyIDXControls2Image(cv2_img,self.current_controls,self.current_fps)
 
-        # Make a copy for the bw thread to use rather than grabbing a new frame
+        # Make a copy for the bw thread to use rather than grabbing a new image
         if self.bw_image_acquisition_running:
-            self.cached_2d_color_frame = frame
-            self.cached_2d_color_frame_timestamp = ros_timestamp
-
-
+            self.cached_2d_color_image = cv2_img
+            self.cached_2d_color_image_timestamp = ros_timestamp
 
         self.img_lock.release()
-        return ret, msg, frame, ros_timestamp
+        return ret, msg, cv2_img, ros_timestamp, encoding
     
     # Good base class candidate - Shared with ONVIF
     def stopColorImg(self):
@@ -403,13 +351,14 @@ class V4l2CameraNode:
             ret = True
             msg = "Success"
         self.color_image_acquisition_running = False
-        self.cached_2d_color_frame = None
-        self.cached_2d_color_frame_timestamp = None
+        self.cached_2d_color_image = None
+        self.cached_2d_color_image_timestamp = None
         self.img_lock.release()
         return ret,msg
     
     # Good base class candidate - Shared with ONVIF
     def getBWImg(self):
+        encoding = "mono8"
         self.img_lock.acquire()
         # Always try to start image acquisition -- no big deal if it was already started; driver returns quickly
         ret, msg = self.driver.startImageAcquisition()
@@ -421,37 +370,38 @@ class V4l2CameraNode:
 
         ros_timestamp = None
         
-        # Only grab a frame if we don't already have a cached color frame... avoids cutting the update rate in half when
+        # Only grab a image if we don't already have a cached color image... avoids cutting the update rate in half when
         # both image streams are running
-        if self.color_image_acquisition_running is False or self.cached_2d_color_frame is None:
+        if self.color_image_acquisition_running is False or self.cached_2d_color_image is None:
             #rospy.logwarn("Debugging: getBWImg acquiring")
-            frame, timestamp, ret, msg = self.driver.getImage()
+            cv2_img, timestamp, ret, msg = self.driver.getImage()
             if timestamp is not None:
                 ros_timestamp = rospy.Time.from_sec(timestamp)
             else:
                 ros_timestamp = rospy.Time.now()
             # Apply controls
-            frame = self.applyControls2Frame(frame)
+            if self.current_controls.get("controls_enable") and cv2_img is not None:
+                cv2_img = nepi_nex.applyIDXControls2Image(cv2_img,self.current_controls,self.current_fps)
         else:
             #rospy.logwarn("Debugging: getBWImg reusing")
-            frame = self.cached_2d_color_frame.copy()
-            ros_timestamp = self.cached_2d_color_frame_timestamp
-            self.cached_2d_color_frame = None # Clear it to avoid using it multiple times in the event that threads are running at different rates
-            self.cached_2d_color_frame_timestamp = None
+            cv2_img = self.cached_2d_color_image.copy()
+            ros_timestamp = self.cached_2d_color_image_timestamp
+            self.cached_2d_color_image = None # Clear it to avoid using it multiple times in the event that threads are running at different rates
+            self.cached_2d_color_image_timestamp = None
             ret = True
-            msg = "Success: Reusing cached frame"
+            msg = "Success: Reusing cached cv2_img"
 
         self.img_lock.release()
 
         # Abort if there was some error or issue in acquiring the image
-        if ret is False or frame is None:
+        if ret is False or cv2_img is None:
             return False, msg, None, None
 
         # Fix the channel count if necessary
-        if frame.ndim == 3:
-            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        if cv2_img.ndim == 3:
+            cv2_img = cv2.cvtColor(cv2_img, cv2.COLOR_BGR2GRAY)
         
-        return ret, msg, frame, ros_timestamp
+        return ret, msg, cv2_img, ros_timestamp, encoding
     
     # Good base class candidate - Shared with ONVIF
     def stopBWImg(self):
