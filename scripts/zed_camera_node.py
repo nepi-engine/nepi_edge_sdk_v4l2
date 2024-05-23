@@ -13,6 +13,7 @@ import sys
 import time
 import math
 import rospy
+import ros_numpy
 import threading
 import cv2
 import copy
@@ -58,7 +59,8 @@ class ZedCameraNode(object):
     stop_range_ratio = 1.0,
     min_range_m = 0.0,
     max_range_m = 20.0,
-    zoom_ratio = .5, 
+    zoom_ratio = 0.5, 
+    rotate_ratio = 0.5,
     frame_id = 'nepi_center_frame' 
     )
 
@@ -111,9 +113,7 @@ class ZedCameraNode(object):
           self.factory_controls['min_range_m'] = self.ZED_MIN_RANGE_M_OVERRIDES[self.zed_type]
         if self.zed_type in self.ZED_MAX_RANGE_M_OVERRIDES:
           self.factory_controls['max_range_m'] = self.ZED_MAX_RANGE_M_OVERRIDES[self.zed_type]
-
         
-
         self.current_controls = self.factory_controls # Updateded during initialization
         self.current_fps = self.DEFAULT_CURRENT_FPS # Should be updateded when settings read
 
@@ -179,7 +179,8 @@ class ZedCameraNode(object):
                 "Resolution": self.setResolutionMode,
                 "Framerate":  self.setFramerateMode,
                 "Range": self.setRange,
-                "Zoom": self.setZoom
+                "Zoom": self.setZoom,
+                "Rotate": None # self.setRotate
             },
             
 
@@ -251,6 +252,7 @@ class ZedCameraNode(object):
                                      setThresholding=idx_callback_names["Controls"]["Thresholding"], 
                                      setRange=idx_callback_names["Controls"]["Range"], 
                                      setZoom=idx_callback_names["Controls"]["Zoom"], 
+                                     setRotate=idx_callback_names["Controls"]["Rotate"], 
                                      getColor2DImg=idx_callback_names["Data"]["Color2DImg"], 
                                      stopColor2DImgAcquisition=idx_callback_names["Data"]["StopColor2DImg"],
                                      getBW2DImg=idx_callback_names["Data"]["BW2DImg"], 
@@ -434,6 +436,16 @@ class ZedCameraNode(object):
         err_str = ""
         return status, err_str
 
+    def setRotate(self, ratio):
+        if ratio > 1:
+            ratio = 1
+        elif ratio < 0:
+            ratio = 0
+        self.current_controls["rotate_ratio"] = ratio
+        status = True
+        err_str = ""
+        return status, err_str
+
     def setDriverCameraControl(self, control_name, value):
         pass # Need to implement
         #return self.driver.setScaledCameraControl(control_name, value)
@@ -535,7 +547,7 @@ class ZedCameraNode(object):
         img_msg = self.depth_map_msg
         img_last_stamp = self.depth_map_last_stamp
         lock = self.depth_map_lock
-        encoding = 'passthrough'
+        encoding = '32FC1'
         # Run get process
         # Initialize some process return variables
         status = False
@@ -552,27 +564,29 @@ class ZedCameraNode(object):
             ros_timestamp = ros_img.header.stamp
             img_last_stamp = ros_timestamp
             lock.release()
-            # ToDo - Add convert depth data back to updated range filtered ros_img
-            # ToDo: single shared process for depth to numpy array conversion and prcessing
-            '''
-            if self.current_controls.get("controls_enable"):
-              # Range adjust depth image bsed on IDX range_window controls
-              # Zed depth data is floats in m, but passed as 4 bytes each that must be converted to floats
-              # Use cv2_bridge() to convert the ROS image to OpenCV format
-              #Convert the depth 4xbyte data to global float meter array
-              cv2_depth_image = nepi_img.rosimg_to_cv2img(img_msg, encoding="passthrough")
-              depth_data = (np.array(cv2_depth_image, dtype=np.float32)) # replace nan values
-              depth_data[np.isnan(depth_data)] = 0
-              delta_range_m = self.current_controls.get("max_range_m") - self.current_controls.get("min_range_m")
-              min_range_filter_m = self.current_controls.get("start_range_ratio") * delta_range_m
-              max_range_filter_m = self.current_controls.get("stop_range_ratio") * delta_range_m
-              depth_data[depth_data < min_range_filter_m] = NaN
-              depth_data[depth_data > max_range_filter_m] = NaN
 
-              ros_img = nepi_img.cv2img_to_rosimg(cv2_depth_image,encoding)
-              ros_img.header = ros_img_header
-              '''
-            
+            # Convert ros depth_map to cv2_img and numpy depth data
+            cv2_depth_map = nepi_img.rosimg_to_cv2img(ros_img, encoding="passthrough")
+            depth_data = (np.array(cv2_depth_map, dtype=np.float32)) # replace nan values
+            # Get range data
+            start_range_ratio = self.current_controls.get("start_range_ratio")
+            stop_range_ratio = self.current_controls.get("stop_range_ratio")
+            min_range_m = self.current_controls.get("min_range_m")
+            max_range_m = self.current_controls.get("max_range_m")
+            delta_range_m = max_range_m - min_range_m
+            # Adjust range Limits if IDX Controls enabled and range ratios are not min/max
+            if self.current_controls.get("controls_enable") and (start_range_ratio > 0 or stop_range_ratio < 1):
+              max_range_m = min_range_m + stop_range_ratio * delta_range_m
+              min_range_m = min_range_m + start_range_ratio * delta_range_m
+              delta_range_m = max_range_m - min_range_m
+              rospy.loginfo("updated range values")
+            # Filter depth_data in range
+            depth_data[np.isnan(depth_data)] = float('nan')  # set to NaN
+            depth_data[depth_data <= min_range_m] = float('nan')  # set to NaN
+            depth_data[depth_data >= max_range_m] = float('nan')  # set to NaN
+            cv2_img = depth_data
+            #ros_img = nepi_img.cv2img_to_rosimg(cv2_depth_image,encoding)
+           
           else:
             msg = "No new data for " + data_product + " available"
         else:
@@ -611,30 +625,31 @@ class ZedCameraNode(object):
             ros_timestamp = ros_img.header.stamp
             img_last_stamp = ros_timestamp
             lock.release()
-            if self.current_controls.get("controls_enable"):
-              # ToDo: single shared process for depth to numpy array conversion and prcessing
-              # Range adjust depth image bsed on IDX range_window controls
-              # Zed depth data is floats in m, but passed as 4 bytes each that must be converted to floats
-              # Use cv2_bridge() to convert the ROS image to OpenCV format
-              #Convert the depth 4xbyte data to global float meter array
-              cv2_depth_image = nepi_img.rosimg_to_cv2img(img_msg, encoding="passthrough")
-              depth_data = (np.array(cv2_depth_image, dtype=np.float32)) # replace nan values
-              depth_data[np.isnan(depth_data)] = 0
-              min_range_m = self.current_controls.get("min_range_m")
-              max_range_m = self.current_controls.get("max_range_m")
+
+            # Convert ros depth_map to cv2_img and numpy depth data
+            cv2_depth_map = nepi_img.rosimg_to_cv2img(ros_img, encoding="passthrough")
+            depth_data = (np.array(cv2_depth_map, dtype=np.float32)) # replace nan values
+            # Get range data
+            start_range_ratio = self.current_controls.get("start_range_ratio")
+            stop_range_ratio = self.current_controls.get("stop_range_ratio")
+            min_range_m = self.current_controls.get("min_range_m")
+            max_range_m = self.current_controls.get("max_range_m")
+            delta_range_m = max_range_m - min_range_m
+            # Adjust range Limits if IDX Controls enabled and range ratios are not min/max
+            if self.current_controls.get("controls_enable") and (start_range_ratio > 0 or stop_range_ratio < 1):
+              max_range_m = min_range_m + stop_range_ratio * delta_range_m
+              min_range_m = min_range_m + start_range_ratio * delta_range_m
               delta_range_m = max_range_m - min_range_m
-              min_range_filter_m = min_range_m + self.current_controls.get("start_range_ratio") * delta_range_m
-              max_range_filter_m = min_range_m + self.current_controls.get("stop_range_ratio") * delta_range_m
-              depth_data[depth_data < min_range_filter_m] = 0
-              depth_data[depth_data > max_range_filter_m] = 0
-              # Turn depth_array_m into colored image and publish
-              depth_data=depth_data-min_range_filter_m
-              depth_data[depth_data < 0] = max_range_filter_m #make zero values long range
-              delta_range_filter_m= max_range_filter_m - min_range_filter_m
-              depth_data = np.abs(depth_data - delta_range_filter_m) # Reverse for color
-              depth_data = np.array(255*depth_data/delta_range_filter_m,np.uint8) # Scale for bgr colormap
-              cv2_img = cv2.applyColorMap(depth_data, cv2.COLORMAP_JET)
-              #ros_img = nepi_img.cv2img_to_rosimg(cv2_depth_image,encoding)
+            # Filter depth_data in range
+            depth_data[np.isnan(depth_data)] = max_range_m 
+            depth_data[depth_data <= min_range_m] = max_range_m # set to max
+            depth_data[depth_data >= max_range_m] = max_range_m # set to max
+            # Create colored cv2 depth image
+            depth_data = depth_data - min_range_m # Shift down 
+            depth_data = np.abs(depth_data - max_range_m) # Reverse for colormap
+            depth_data = np.array(255*depth_data/delta_range_m,np.uint8) # Scale for bgr colormap
+            cv2_img = cv2.applyColorMap(depth_data, cv2.COLORMAP_JET)
+            #ros_img = nepi_img.cv2img_to_rosimg(cv2_depth_image,encoding)
           else:
             msg = "No new data for " + data_product + " available"
         else:
@@ -667,28 +682,28 @@ class ZedCameraNode(object):
         if pc_msg is not None:
           if pc_msg.header.stamp != pc_last_stamp:
             lock.acquire()
-            ros_pc = pc_msg
+            ros_pc = copy.deepcopy(pc_msg)
             ros_timestamp = pc_msg.header.stamp
             ros_frame = pc_msg.header.frame_id
             status = True
             msg = ""
             pc_last_stamp = ros_timestamp
-            lock.release()
             if self.current_controls.get("controls_enable"):
               start_range_ratio = self.current_controls.get("start_range_ratio")
               stop_range_ratio = self.current_controls.get("stop_range_ratio")
+              min_range_m = self.current_controls.get("min_range_m")
+              max_range_m = self.current_controls.get("max_range_m")
+              delta_range_m = max_range_m - min_range_m
+              range_clip_min_range_m = min_range_m + start_range_ratio  * delta_range_m
+              range_clip_max_range_m = min_range_m + stop_range_ratio  * delta_range_m
               if start_range_ratio > 0 or stop_range_ratio < 1:
                 o3d_pc = nepi_pc.rospc_to_o3dpc(ros_pc, remove_nans=False)
-                min_range_m = self.current_controls.get("min_range_m")
-                max_range_m = self.current_controls.get("max_range_m")
-                delta_range_m = max_range_m - min_range_m
-                range_clip_min_range_m = min_range_m + start_range_ratio  * delta_range_m
-                range_clip_max_range_m = min_range_m + stop_range_ratio  * delta_range_m
                 o3d_pc = nepi_pc.range_clip( o3d_pc, range_clip_min_range_m, range_clip_max_range_m)
           else:
             msg = "No new data for " + data_product + " available"
         else:
           msg = "Received None type data for " + data_product + " process"
+        lock.release()
         if o3d_pc is not None:
           return status, msg, o3d_pc, ros_timestamp, ros_frame
         else: 
@@ -718,38 +733,54 @@ class ZedCameraNode(object):
             lock.acquire()
             status = True
             msg = ""
-            ros_pc = copy.deepcopy(pc_msg)
-            ros_timestamp = ros_pc.header.stamp
+            o3d_pc = nepi_pc.rospc_to_o3dpc(pc_msg, remove_nans=True)
+            ros_timestamp = pc_msg.header.stamp
             ros_frame = pc_msg.header.frame_id
             pc_last_stamp = ros_timestamp
             lock.release()
-            o3d_pc = nepi_pc.rospc_to_o3dpc(ros_pc, remove_nans=True)
             
             if self.current_controls.get("controls_enable"):
               # Range Clip Pointcloud
               start_range_ratio = self.current_controls.get("start_range_ratio")
               stop_range_ratio = self.current_controls.get("stop_range_ratio")
+              min_range_m = self.current_controls.get("min_range_m")
+              max_range_m = self.current_controls.get("max_range_m")
+              delta_range_m = max_range_m - min_range_m
+              range_clip_min_range_m = min_range_m + start_range_ratio  * delta_range_m
+              range_clip_max_range_m = min_range_m + stop_range_ratio  * delta_range_m
               if start_range_ratio > 0 or stop_range_ratio < 1:
-                min_range_m = self.current_controls.get("min_range_m")
-                max_range_m = self.current_controls.get("max_range_m")
-                delta_range_m = max_range_m - min_range_m
-                range_clip_min_range_m = min_range_m + start_range_ratio  * delta_range_m
-                range_clip_max_range_m = min_range_m + stop_range_ratio  * delta_range_m
                 o3d_pc = nepi_pc.range_clip( o3d_pc, range_clip_min_range_m, range_clip_max_range_m)
-              # Adjust Zoom Ratio for rendering
-              res_scaler = float((self.current_controls.get("resolution_mode")) + 1) / float(4)
-              img_width = int(self.Render_Img_Width * res_scaler)
-              img_height = int(self.Render_Img_Height * res_scaler)
+              # Adjust resolution  and downsample for reduced rendering time
+              img_width = self.Render_Img_Width
+              img_height = self.Render_Img_Height
+              
+              #res_scaler = float((self.current_controls.get("resolution_mode")) + 1) / float(4)
+              #img_width = self.Render_Img_Width # int(self.Render_Img_Width * res_scaler)
+              #img_height = self.Render_Img_Height # int(self.Render_Img_Height * res_scaler)
+              #k_points = int(100 * float(self.current_controls.get("resolution_mode"))/float(4)**2)
+              #o3d_pc = nepi_pc.uniform_down_sampling(o3d_pc, every_k_points = k_points)
+              
+              # Adjust Zoom for rendering
               zoom_scaler = 1 - self.current_controls.get("zoom_ratio")
               render_eye = [number*zoom_scaler for number in self.Render_Eye] # Apply IDX zoom control
+
+              # Adjust Rotate for rendering
+              #hor_vector = [render_eye[0],render_eye[1]]
+              #hor_rot_ratio = self.current_controls.get("rotate_ratio")
+              #hor_vector_rot = nepi_pc.vector_rotate(hor_vector,hor_rot_ratio) 
+              #render_eye[0] = hor_vector_rot[0]
+              #render_eye[1] = hor_vector_rot[1]
+              #rospy.loginfo(render_eye)
+
             else: 
-              img_width = self.Render_Img_Width * res_scaler
-              img_height = self.Render_Img_Height * res_scaler
+              img_width = self.Render_Img_Width
+              img_height = self.Render_Img_Height
               render_eye = self.Render_Eye
             if not rospy.is_shutdown():
               o3d_img = nepi_pc.render_image(o3d_pc,img_width,img_height,
                           self.Render_Background,self.Render_FOV,self.Render_Center,render_eye,self.Render_Up)
               ros_img = nepi_pc.o3dimg_to_rosimg(o3d_img, stamp=ros_timestamp, frame_id=ros_frame)
+            
           else:
             msg = "No new data for " + data_product + " available"
         else:
