@@ -45,8 +45,8 @@ from rospy.numpy_msg import numpy_msg
 class ZedCameraNode(object):
     DEFAULT_NODE_NAME = "zed_stereo_camera" # zed replaced with zed_type once discovered
 
-    FACTORY_SETTINGS = nepi_nex.NONE_SETTINGS
-
+    FACTORY_SETTINGS = nepi_nex.TEST_SETTINGS
+    
     #Factory Control Values 
     FACTORY_CONTROLS = dict( controls_enable = True,
     auto_adjust = False,
@@ -61,7 +61,7 @@ class ZedCameraNode(object):
     max_range_m = 20.0,
     zoom_ratio = 0.5, 
     rotate_ratio = 0.5,
-    frame_id = 'nepi_center_frame' 
+    frame_id = 'sensor_frame' 
     )
 
     DEFAULT_CURRENT_FPS = 20 # Will be update later with actual
@@ -79,7 +79,6 @@ class ZedCameraNode(object):
     Render_Eye = [-5, -2.5, 0]  # camera position
     Render_Up = [0, 0, 1]  # camera orientation
 
-
     zed_type = 'zed'
 
     # Create shared class variables and thread locks 
@@ -92,9 +91,15 @@ class ZedCameraNode(object):
     depth_map_msg = None
     depth_map_last_stamp = None
     depth_map_lock = threading.Lock()   
+    depth_map2img_msg = None
+    depth_map2img_last_stamp = None
+    depth_map2img_lock = threading.Lock()  
     pc_msg = None
     pc_last_stamp = None
     pc_lock = threading.Lock()
+    pc2img_msg = None
+    pc2img_last_stamp = None
+    pc2img_lock = threading.Lock()
 
     gps_msg = None
     odom_msg = None
@@ -104,23 +109,6 @@ class ZedCameraNode(object):
   
         # This parameter should be automatically set by idx_sensor_mgr
         self.zed_type = rospy.get_param('~self.zed_type', 'zed2')
-
-        # Initialize class variables
-        self.factory_controls = self.FACTORY_CONTROLS
-
-        # Apply OVERRIDES
-        if self.zed_type in self.ZED_MIN_RANGE_M_OVERRIDES:
-          self.factory_controls['min_range_m'] = self.ZED_MIN_RANGE_M_OVERRIDES[self.zed_type]
-        if self.zed_type in self.ZED_MAX_RANGE_M_OVERRIDES:
-          self.factory_controls['max_range_m'] = self.ZED_MAX_RANGE_M_OVERRIDES[self.zed_type]
-        
-        self.current_controls = self.factory_controls # Updateded during initialization
-        self.current_fps = self.DEFAULT_CURRENT_FPS # Should be updateded when settings read
-
-        self.caps_settings = nepi_nex.TEST_CAP_SETTINGS # None # Updateded during initialization
-        self.factory_settings = nepi_nex.TEST_SETTINGS # None # Updateded during initialization
-        self.current_settings = nepi_nex.TEST_SETTINGS # None # Updateded during initialization
-
 
         # Run the correct zed_ros_wrapper launch file
         zed_launchfile = self.zed_type + '.launch'
@@ -154,7 +142,9 @@ class ZedCameraNode(object):
         rospy.Subscriber(ZED_COLOR_2D_IMAGE_TOPIC, Image, self.color_2d_image_callback, queue_size = 1)
         rospy.Subscriber(ZED_BW_2D_IMAGE_TOPIC, Image, self.bw_2d_image_callback, queue_size = 1)
         rospy.Subscriber(ZED_DEPTH_MAP_TOPIC, Image, self.depth_map_callback, queue_size = 1)
+        rospy.Subscriber(ZED_DEPTH_MAP_TOPIC, Image, self.depth_map2img_callback, queue_size = 1)
         rospy.Subscriber(ZED_POINTCLOUD_TOPIC, PointCloud2, self.pointcloud_callback, queue_size = 1)
+        rospy.Subscriber(ZED_POINTCLOUD_TOPIC, PointCloud2, self.pointcloud2img_callback, queue_size = 1)
         rospy.Subscriber(ZED_ODOM_TOPIC, Odometry, self.idx_odom_topic_callback)
 
         # Launch the ROS node
@@ -204,41 +194,29 @@ class ZedCameraNode(object):
             }
         }
 
-        # IDX Remappings
-        # Now that we've initialized the callbacks table, can apply the remappings
-        idx_remappings = rospy.get_param('~idx_remappings', {})
-        rospy.loginfo(self.node_name + ': Establishing IDX remappings')
-        for from_name in idx_remappings:
-            to_name = idx_remappings[from_name]
-            if (from_name not in idx_callback_names["Controls"]) and (from_name not in idx_callback_names["Data"]):
-                rospy.logwarn('\tInvalid IDX remapping target: ' + from_name)
-            elif from_name in idx_callback_names["Controls"]:
-                if self.driver.hasAdjustableCameraControl(idx_remappings[to_name]) is False:
-                    rospy.logwarn('\tRemapping ' + from_name + ' to an unavailable control (' + to_name + ')')
-                else:
-                    rospy.loginfo('\t' + from_name + '-->' + to_name)
-                    idx_callback_names["Controls"][from_name] = lambda x: self.setDriverCameraControl(to_name, x)
-            elif (from_name in idx_callback_names["Controls"]):
-                # if (TODO: check data availability from driver):
-                #    rospy.logwarn('\tRemapping ' + from_name + ' to an unavailable data source (' + to_name + ')')
-                
-                # For now, this is unsupported
-                rospy.logwarn('\tRemapping IDX data for V4L2 devices not yet supported')
-            else:
-                idx_callback_names[from_name] = idx_callback_names[to_name]
-                rospy.loginfo('\t' + from_name + '-->' + to_name)
-
-
-        # Initialize controls and settings variables
+        # Initialize controls
         self.factory_controls = self.FACTORY_CONTROLS
+        # Apply OVERRIDES
+        if self.zed_type in self.ZED_MIN_RANGE_M_OVERRIDES:
+          self.factory_controls['min_range_m'] = self.ZED_MIN_RANGE_M_OVERRIDES[self.zed_type]
+        if self.zed_type in self.ZED_MAX_RANGE_M_OVERRIDES:
+          self.factory_controls['max_range_m'] = self.ZED_MAX_RANGE_M_OVERRIDES[self.zed_type]
+        
         self.current_controls = self.factory_controls # Updateded during initialization
         self.current_fps = self.DEFAULT_CURRENT_FPS # Should be updateded when settings read
-        self.caps_settings = self.getCapSettings() 
+
+        # Initialize settings
+        self.caps_settings = nepi_nex.TEST_CAP_SETTINGS 
         self.factory_settings = self.FACTORY_SETTINGS
+        self.current_settings = [] # Updated 
+        for setting in self.factory_settings:
+          self.settingsUpdateFunction(setting)
+        
 
         # Launch the IDX interface --  this takes care of initializing all the camera settings from config. file
         rospy.loginfo(self.node_name + ": Launching NEPI IDX (ROS) interface...")
         self.idx_if = ROSIDXSensorIF(sensor_name=self.node_name,
+                                     capSettings = self.caps_settings,
                                      factorySettings = self.factory_settings,
                                      settingsUpdateFunction=self.settingsUpdateFunction,
                                      getSettings=self.getSettings,
@@ -272,6 +250,10 @@ class ZedCameraNode(object):
 
         # Update available IDX callbacks based on capabilities that the driver reports
         self.logDeviceInfo()
+
+        # Configure pointcloud processing Verbosity
+        pc_verbosity = nepi_pc.set_verbosity_level("Error")
+        rospy.loginfo(pc_verbosity)
 
         # Now that all camera start-up stuff is processed, we can update the camera from the parameters that have been established
         self.idx_if.updateFromParamServer()
@@ -308,7 +290,17 @@ class ZedCameraNode(object):
         self.depth_map_lock.release()
       else:
         pass # skip this msg to ensure latest is cached when ready
-      self.depth_map_msg = image_msg
+
+
+          # callback to get depthmap
+    def depth_map2img_callback(self, image_msg):
+      if self.depth_map2img_lock.locked() is False:
+        self.depth_map2img_lock.acquire()
+        self.depth_map2img_msg = image_msg
+        self.depth_map2img_lock.release()
+      else:
+        pass # skip this msg to ensure latest is cached when ready
+
 
 
     # callback to get and republish point_cloud and image
@@ -317,6 +309,16 @@ class ZedCameraNode(object):
         self.pc_lock.acquire()
         self.pc_msg = pointcloud_msg
         self.pc_lock.release()
+      else:
+        pass # skip this msg to ensure latest is cached when ready
+
+
+   # callback to get and republish point_cloud and image
+    def pointcloud2img_callback(self, pointcloud_msg):
+      if self.pc2img_lock.locked() is False:
+        self.pc2img_lock.acquire()
+        self.pc2img_msg = pointcloud_msg
+        self.pc2img_lock.release()
       else:
         pass # skip this msg to ensure latest is cached when ready
 
@@ -333,18 +335,18 @@ class ZedCameraNode(object):
         rospy.loginfo(device_info_str)
 
     def getCapSettings(self):
-        cap_settings = nepi_nex.NONE_SETTINGS
+        cap_settings = nepi_nex.TEST_CAP_SETTINGS #.NONE_SETTINGS
         # Replace with get cap settings process
         return cap_settings
 
     def settingsUpdateFunction(self,setting):
         success = False
-        # Add update setting process
+        self.current_settings = nepi_nex.update_setting_in_settings(setting,self.current_settings)
         success = True
         return success
     
     def getSettings(self):
-        settings = nepi_nex.NONE_SETTINGS
+        settings = self.current_settings
         # Replace with get settings process
         return settings
 
@@ -605,9 +607,9 @@ class ZedCameraNode(object):
     def getDepthImg(self):
         # Set process input variables
         data_product = "depth_image"
-        img_msg = self.depth_map_msg
-        img_last_stamp = self.depth_map_last_stamp
-        lock = self.depth_map_lock
+        img_msg = self.depth_map2img_msg
+        img_last_stamp = self.depth_map2img_last_stamp
+        lock = self.depth_map2img_lock
         encoding = 'bgr8'
          # Run get process
         # Initialize some process return variables
@@ -717,9 +719,9 @@ class ZedCameraNode(object):
 
     def getPointcloudImg(self):
         data_product = "pointcloud_image"
-        pc_msg = self.pc_msg
-        pc_last_stamp = self.pc_last_stamp
-        lock = self.pc_lock
+        pc_msg = self.pc2img_msg
+        pc_last_stamp = self.pc2img_last_stamp
+        lock = self.pc2img_lock
         encoding = 'bgr8'
          # Run get process
         # Initialize some process return variables

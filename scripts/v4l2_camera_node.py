@@ -23,7 +23,7 @@ from nepi_edge_sdk_base import nepi_nex
 class V4l2CameraNode:
     DEFAULT_NODE_NAME = "v4l2_camera_node"
 
-    FACTORY_SETTINGS = nepi_nex.NONE_SETTINGS
+    FACTORY_SETTINGS = nepi_nex.TEST_SETTINGS
 
     #Factory Control Values 
     FACTORY_CONTROLS = dict( controls_enable = True,
@@ -121,41 +121,22 @@ class V4l2CameraNode:
             }
         }
 
-        # IDX Remappings
-        # Now that we've initialized the callbacks table, can apply the remappings
-        idx_remappings = rospy.get_param('~idx_remappings', {})
-        rospy.loginfo(self.node_name + ': Establishing IDX remappings')
-        for from_name in idx_remappings:
-            to_name = idx_remappings[from_name]
-            if (from_name not in idx_callback_names["Controls"]) and (from_name not in idx_callback_names["Data"]):
-                rospy.logwarn('\tInvalid IDX remapping target: ' + from_name)
-            elif from_name in idx_callback_names["Controls"]:
-                if self.driver.hasAdjustableCameraControl(idx_remappings[to_name]) is False:
-                    rospy.logwarn('\tRemapping ' + from_name + ' to an unavailable control (' + to_name + ')')
-                else:
-                    rospy.loginfo('\t' + from_name + '-->' + to_name)
-                    idx_callback_names["Controls"][from_name] = lambda x: self.setDriverCameraControl(to_name, x)
-            elif (from_name in idx_callback_names["Controls"]):
-                # if (TODO: check data availability from driver):
-                #    rospy.logwarn('\tRemapping ' + from_name + ' to an unavailable data source (' + to_name + ')')
-                
-                # For now, this is unsupported
-                rospy.logwarn('\tRemapping IDX data for V4L2 devices not yet supported')
-            else:
-                idx_callback_names[from_name] = idx_callback_names[to_name]
-                rospy.loginfo('\t' + from_name + '-->' + to_name)
-
-
-        # Initialize controls and settings variables
+        # Initialize controls
         self.factory_controls = self.FACTORY_CONTROLS
         self.current_controls = self.factory_controls # Updateded during initialization
         self.current_fps = self.DEFAULT_CURRENT_FPS # Should be updateded when settings read
-        self.caps_settings = getCapSettings() 
+
+        # Initialize settings
+        self.caps_settings = nepi_nex.TEST_CAP_SETTINGS 
         self.factory_settings = self.FACTORY_SETTINGS
+        self.current_settings = [] # Updated 
+        for setting in self.factory_settings:
+          self.settingsUpdateFunction(setting)
 
         # Launch the IDX interface --  this takes care of initializing all the camera settings from config. file
         rospy.loginfo(self.node_name + ": Launching NEPI IDX (ROS) interface...")
         self.idx_if = ROSIDXSensorIF(sensor_name=self.node_name,
+                                     capSettings = self.caps_settings,
                                      factorySettings = self.factory_settings,
                                      settingsUpdateFunction=self.settingsUpdateFunction,
                                      getSettings=self.getSettings,
@@ -225,18 +206,34 @@ class V4l2CameraNode:
         rospy.loginfo(device_info_str)
 
     def getCapSettings(self):
-        cap_settings = nepi_nex.NONE_SETTINGS
+        cap_settings = nepi_nex.TEST_CAP_SETTINGS #.NONE_SETTINGS
         # Replace with get cap settings process
         return cap_settings
 
     def settingsUpdateFunction(self,setting):
         success = False
-        # Add update setting process
+        self.current_settings = nepi_nex.update_setting_in_settings(setting,self.current_settings)
         success = True
         return success
     
     def getSettings(self):
-        settings = nepi_nex.NONE_SETTINGS
+        settings = self.current_settings
+        # Replace with get settings process
+        return settings
+
+    def getCapSettings(self):
+        cap_settings = nepi_nex.TEST_CAP_SETTINGS #.NONE_SETTINGS
+        # Replace with get cap settings process
+        return cap_settings
+
+    def settingsUpdateFunction(self,setting):
+        success = False
+        self.current_settings = nepi_nex.update_setting_in_settings(setting,self.current_settings)
+        success = True
+        return success
+    
+    def getSettings(self):
+        settings = self.current_settings
         # Replace with get settings process
         return settings
     
