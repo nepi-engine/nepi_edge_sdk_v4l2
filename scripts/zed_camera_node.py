@@ -69,16 +69,6 @@ class ZedCameraNode(object):
     ZED_MIN_RANGE_M_OVERRIDES = { 'zed': .2, 'zedm': .15, 'zed2': .2, 'zedx': .2} 
     ZED_MAX_RANGE_M_OVERRIDES = { 'zed':  15, 'zedm': 15, 'zed2': 20, 'zedx': 15} 
 
-    # Render Image from pointcloud
-    Render_Enable = True
-    Render_Img_Width = 1280
-    Render_Img_Height = 720
-    Render_Background = [0, 0, 0, 0] # background color rgba
-    Render_FOV = 60 # camera field of view in degrees
-    Render_Center = [3, 0, 0]  # look_at target
-    Render_Eye = [-5, -2.5, 0]  # camera position
-    Render_Up = [0, 0, 1]  # camera orientation
-
     zed_type = 'zed'
 
     # Create shared class variables and thread locks 
@@ -97,9 +87,6 @@ class ZedCameraNode(object):
     pc_msg = None
     pc_last_stamp = None
     pc_lock = threading.Lock()
-    pc2img_msg = None
-    pc2img_last_stamp = None
-    pc2img_lock = threading.Lock()
 
     gps_msg = None
     odom_msg = None
@@ -144,7 +131,6 @@ class ZedCameraNode(object):
         rospy.Subscriber(ZED_DEPTH_MAP_TOPIC, Image, self.depth_map_callback, queue_size = 1)
         rospy.Subscriber(ZED_DEPTH_MAP_TOPIC, Image, self.depth_map2img_callback, queue_size = 1)
         rospy.Subscriber(ZED_POINTCLOUD_TOPIC, PointCloud2, self.pointcloud_callback, queue_size = 1)
-        rospy.Subscriber(ZED_POINTCLOUD_TOPIC, PointCloud2, self.pointcloud2img_callback, queue_size = 1)
         rospy.Subscriber(ZED_ODOM_TOPIC, Odometry, self.idx_odom_topic_callback)
 
         # Launch the ROS node
@@ -186,8 +172,6 @@ class ZedCameraNode(object):
                 "StopDepthImg":  self.stopDepthImg,
                 "Pointcloud":  self.getPointcloud, 
                 "StopPointcloud":  self.stopPointcloud,
-                "PointcloudImg":  self.getPointcloudImg, 
-                "StopPointcloudImg":  self.stopPointcloudImg,
                 "GPS": None,
                 "Odom": self.getOdom,
                 "Heading": None,
@@ -241,8 +225,6 @@ class ZedCameraNode(object):
                                      stopDepthImgAcquisition=idx_callback_names["Data"]["StopDepthImg"],
                                      getPointcloud=idx_callback_names["Data"]["Pointcloud"], 
                                      stopPointcloudAcquisition=idx_callback_names["Data"]["StopPointcloud"],
-                                     getPointcloudImg=idx_callback_names["Data"]["PointcloudImg"], 
-                                     stopPointcloudImgAcquisition=idx_callback_names["Data"]["StopPointcloudImg"],
                                      getGPSMsg=idx_callback_names["Data"]["GPS"],
                                      getOdomMsg=idx_callback_names["Data"]["Odom"],
                                      getHeadingMsg=idx_callback_names["Data"]["Heading"])
@@ -312,15 +294,6 @@ class ZedCameraNode(object):
       else:
         pass # skip this msg to ensure latest is cached when ready
 
-
-   # callback to get and republish point_cloud and image
-    def pointcloud2img_callback(self, pointcloud_msg):
-      if self.pc2img_lock.locked() is False:
-        self.pc2img_lock.acquire()
-        self.pc2img_msg = pointcloud_msg
-        self.pc2img_lock.release()
-      else:
-        pass # skip this msg to ensure latest is cached when ready
 
     # Callback to get odom data
     def idx_odom_topic_callback(self, odom_msg):
@@ -713,83 +686,6 @@ class ZedCameraNode(object):
 
     
     def stopPointcloud(self):
-        ret = True
-        msg = "Success"
-        return ret,msg
-
-    def getPointcloudImg(self):
-        data_product = "pointcloud_image"
-        pc_msg = self.pc2img_msg
-        pc_last_stamp = self.pc2img_last_stamp
-        lock = self.pc2img_lock
-        encoding = 'bgr8'
-         # Run get process
-        # Initialize some process return variables
-        status = False
-        msg = ""
-        ros_img = None
-        ros_timestamp = None
-        ros_frame = None
-        if pc_msg is not None:
-          if pc_msg.header.stamp != pc_last_stamp:
-            lock.acquire()
-            status = True
-            msg = ""
-            o3d_pc = nepi_pc.rospc_to_o3dpc(pc_msg, remove_nans=True)
-            ros_timestamp = pc_msg.header.stamp
-            ros_frame = pc_msg.header.frame_id
-            pc_last_stamp = ros_timestamp
-            lock.release()
-            
-            if self.current_controls.get("controls_enable"):
-              # Range Clip Pointcloud
-              start_range_ratio = self.current_controls.get("start_range_ratio")
-              stop_range_ratio = self.current_controls.get("stop_range_ratio")
-              min_range_m = self.current_controls.get("min_range_m")
-              max_range_m = self.current_controls.get("max_range_m")
-              delta_range_m = max_range_m - min_range_m
-              range_clip_min_range_m = min_range_m + start_range_ratio  * delta_range_m
-              range_clip_max_range_m = min_range_m + stop_range_ratio  * delta_range_m
-              if start_range_ratio > 0 or stop_range_ratio < 1:
-                o3d_pc = nepi_pc.range_clip( o3d_pc, range_clip_min_range_m, range_clip_max_range_m)
-              # Adjust resolution  and downsample for reduced rendering time
-              img_width = self.Render_Img_Width
-              img_height = self.Render_Img_Height
-              
-              #res_scaler = float((self.current_controls.get("resolution_mode")) + 1) / float(4)
-              #img_width = self.Render_Img_Width # int(self.Render_Img_Width * res_scaler)
-              #img_height = self.Render_Img_Height # int(self.Render_Img_Height * res_scaler)
-              #k_points = int(100 * float(self.current_controls.get("resolution_mode"))/float(4)**2)
-              #o3d_pc = nepi_pc.uniform_down_sampling(o3d_pc, every_k_points = k_points)
-              
-              # Adjust Zoom for rendering
-              zoom_scaler = 1 - self.current_controls.get("zoom_ratio")
-              render_eye = [number*zoom_scaler for number in self.Render_Eye] # Apply IDX zoom control
-
-              # Adjust Rotate for rendering
-              #hor_vector = [render_eye[0],render_eye[1]]
-              #hor_rot_ratio = self.current_controls.get("rotate_ratio")
-              #hor_vector_rot = nepi_pc.vector_rotate(hor_vector,hor_rot_ratio) 
-              #render_eye[0] = hor_vector_rot[0]
-              #render_eye[1] = hor_vector_rot[1]
-              #rospy.loginfo(render_eye)
-
-            else: 
-              img_width = self.Render_Img_Width
-              img_height = self.Render_Img_Height
-              render_eye = self.Render_Eye
-            if not rospy.is_shutdown():
-              o3d_img = nepi_pc.render_image(o3d_pc,img_width,img_height,
-                          self.Render_Background,self.Render_FOV,self.Render_Center,render_eye,self.Render_Up)
-              ros_img = nepi_pc.o3dimg_to_rosimg(o3d_img, stamp=ros_timestamp, frame_id=ros_frame)
-            
-          else:
-            msg = "No new data for " + data_product + " available"
-        else:
-          msg = "Received None type data for " + data_product + " process"
-        return status, msg, ros_img, ros_timestamp, encoding
-    
-    def stopPointcloudImg(self):
         ret = True
         msg = "Success"
         return ret,msg
