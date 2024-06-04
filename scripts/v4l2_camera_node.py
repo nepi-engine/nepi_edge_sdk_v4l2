@@ -320,7 +320,7 @@ class V4l2CameraNode:
         #print('GI: ', stop - start)
         if ret is False:
             self.img_lock.release()
-            return ret, msg, None, None
+            return ret, msg, None, None, None
         
         if timestamp is not None:
             ros_timestamp = rospy.Time.from_sec(timestamp)
@@ -393,7 +393,7 @@ class V4l2CameraNode:
 
         # Abort if there was some error or issue in acquiring the image
         if ret is False or cv2_img is None:
-            return False, msg, None, None
+            return False, msg, None, None, None
 
         # Fix the channel count if necessary
         if cv2_img.ndim == 3:
