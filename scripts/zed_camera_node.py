@@ -430,22 +430,19 @@ class ZedCameraNode(object):
     def getColorImg(self):
         # Set process input variables
         data_product = "color_2d_image"
+        self.color_img_lock.acquire()
         img_msg = self.color_img_msg
-        img_last_stamp = self.color_img_last_stamp
-        lock = self.color_img_lock
+        self.color_img_lock.release()
         encoding = 'rgb8'
 
         # Run get process
         # Initialize some process return variables
         status = False
         msg = ""
-        ros_img = None
         cv2_img = None
         ros_timestamp = None
         if img_msg is not None:
-          if img_msg.header.stamp != img_last_stamp:
-            lock.acquire()
-            ros_img = img_msg
+          if img_msg.header.stamp != self.color_img_last_stamp:
             ros_timestamp = img_msg.header.stamp
             status = True
             msg = ""
@@ -454,8 +451,7 @@ class ZedCameraNode(object):
               cv2_img =  nepi_img.rosimg_to_cv2img(ros_img, encoding = encoding)
               cv2_img = nepi_nex.applyIDXControls2Image(cv2_img,self.current_controls,self.current_fps)
               #ros_img = nepi_img.cv2img_to_rosimg(cv2_img, encoding = encoding)
-            img_last_stamp = ros_timestamp
-            lock.release()
+            self.color_img_last_stamp = ros_timestamp
           else:
             msg = "No new data for " + data_product + " available"
         else:
@@ -475,32 +471,28 @@ class ZedCameraNode(object):
     def getBWImg(self):
         # Set process input variables
         data_product = "bw_2d_image"
-        img_msg = self.bw_img_msg
-        img_last_stamp = self.bw_img_last_stamp
-        lock = self.bw_img_lock
+        self.bw_img_lock.acquire()
+        img_msg = copy.deepcopy(self.bw_img_msg)
+        self.bw_img_lock.release()
         encoding = "mono8"
 
         # Run get process
         # Initialize some process return variables
         status = False
         msg = ""
-        ros_img = None
         cv2_img = None
         ros_timestamp = None
         if img_msg is not None:
-          if img_msg.header.stamp != img_last_stamp:
-            lock.acquire()
-            ros_img = img_msg
+          if img_msg.header.stamp != self.bw_img_last_stamp:
             ros_timestamp = img_msg.header.stamp
             status = True
             msg = ""
-            ros_timestamp = ros_img.header.stamp
+            ros_timestamp = img_msg.header.stamp
             if self.current_controls.get("controls_enable"):
               cv2_img =  nepi_img.rosimg_to_cv2img(ros_img, encoding = encoding)
               cv2_img = nepi_nex.applyIDXControls2Image(cv2_img,self.current_controls,self.current_fps)
               #ros_img = nepi_img.cv2img_to_rosimg(cv2_img, encoding = encoding)
-            img_last_stamp = ros_timestamp
-            lock.release()
+            self.bw_img_last_stamp = ros_timestamp
           else:
             msg = "No new data for " + data_product + " available"
         else:
@@ -519,27 +511,23 @@ class ZedCameraNode(object):
     def getDepthMap(self):
         # Set process input variables
         data_product = "depth_map"
-        img_msg = self.depth_map_msg
-        img_last_stamp = self.depth_map_last_stamp
-        lock = self.depth_map_lock
+        self.depth_map_lock.acquire()
+        img_msg = copy.deepcopy(self.depth_map_msg)
+        self.depth_map_lock.release()
         encoding = '32FC1'
         # Run get process
         # Initialize some process return variables
         status = False
         msg = ""
         cv2_img = None
-        ros_img = None
         ros_timestamp = None
         if img_msg is not None:
-          if img_msg.header.stamp != img_last_stamp:
-            lock.acquire()
+          if img_msg.header.stamp != self.depth_map_last_stamp:
             status = True
             msg = ""
-            ros_img = copy.deepcopy(img_msg)
-            ros_timestamp = ros_img.header.stamp
-            img_last_stamp = ros_timestamp
-            lock.release()
-
+            ros_timestamp = img_msg.header.stamp
+            self.depth_map_last_stamp = ros_timestamp
+            
             # Convert ros depth_map to cv2_img and numpy depth data
             cv2_depth_map = nepi_img.rosimg_to_cv2img(ros_img, encoding="passthrough")
             depth_data = (np.array(cv2_depth_map, dtype=np.float32)) # replace nan values
@@ -580,27 +568,23 @@ class ZedCameraNode(object):
     def getDepthImg(self):
         # Set process input variables
         data_product = "depth_image"
-        img_msg = self.depth_map2img_msg
-        img_last_stamp = self.depth_map2img_last_stamp
-        lock = self.depth_map2img_lock
+        self.depth_map2img_lock.acquire()
+        img_msg = copy.deepcopy(self.depth_map2img_msg)
+        self.depth_map2img_lock.release()
         encoding = 'bgr8'
          # Run get process
         # Initialize some process return variables
         status = False
         msg = ""
         cv2_img = None
-        ros_img = None
         ros_timestamp = None
         if img_msg is not None:
-          if img_msg.header.stamp != img_last_stamp:
-            lock.acquire()
+          if img_msg.header.stamp != self.depth_map2img_last_stamp:
             status = True
             msg = ""
-            ros_img = copy.deepcopy(img_msg)
-            ros_timestamp = ros_img.header.stamp
-            img_last_stamp = ros_timestamp
-            lock.release()
-
+            ros_timestamp = img_msg.header.stamp
+            self.depth_map2img_last_stamp = ros_timestamp
+            
             # Convert ros depth_map to cv2_img and numpy depth data
             cv2_depth_map = nepi_img.rosimg_to_cv2img(ros_img, encoding="passthrough")
             depth_data = (np.array(cv2_depth_map, dtype=np.float32)) # replace nan values
@@ -643,26 +627,23 @@ class ZedCameraNode(object):
     def getPointcloud(self):     
         # Set process input variables
         data_product = "pointcloud"
-        pc_msg = self.pc_msg
-        pc_last_stamp = self.pc_last_stamp
-        lock = self.pc_lock
+        self.pc_lock.acquire()
+        pc_msg = copy.deepcopy(self.pc_msg)
+        self.pc_lock.release()
         # Run get process
         # Initialize some process return variables
         status = False
         msg = ""
-        ros_pc = None
         o3d_pc = None
         ros_timestamp = None
         ros_frame = None
         if pc_msg is not None:
-          if pc_msg.header.stamp != pc_last_stamp:
-            lock.acquire()
-            ros_pc = copy.deepcopy(pc_msg)
+          if pc_msg.header.stamp != self.pc_last_stamp:
             ros_timestamp = pc_msg.header.stamp
             ros_frame = pc_msg.header.frame_id
             status = True
             msg = ""
-            pc_last_stamp = ros_timestamp
+            self.pc_last_stamp = ros_timestamp
             if self.current_controls.get("controls_enable"):
               start_range_ratio = self.current_controls.get("start_range_ratio")
               stop_range_ratio = self.current_controls.get("stop_range_ratio")
@@ -678,7 +659,6 @@ class ZedCameraNode(object):
             msg = "No new data for " + data_product + " available"
         else:
           msg = "Received None type data for " + data_product + " process"
-        lock.release()
         if o3d_pc is not None:
           return status, msg, o3d_pc, ros_timestamp, ros_frame
         else: 
