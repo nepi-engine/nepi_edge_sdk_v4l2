@@ -779,7 +779,7 @@ class ZedCameraNode(object):
               ros_img = nepi_pc.o3dimg_to_rosimg(o3d_img, stamp=ros_timestamp, frame_id=ros_frame)
             else:
               # Create point cloud renderer
-              self.img_renderer = nepi_pc.create_img_renderer(img_width=self.img_width,img_height=self.img_height, fov=self.render_fov, background = self.render_background)
+              self.img_renderer = nepi_pc.create_img_renderer(img_width=img_width,img_height=img_height, fov=self.render_fov, background = self.render_background)
               self.img_renderer_mtl = nepi_pc.create_img_renderer_mtl()
 
           else:

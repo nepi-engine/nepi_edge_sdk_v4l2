@@ -23,7 +23,6 @@ from nepi_edge_sdk_base import nepi_nex
 class V4l2CameraNode:
     DEFAULT_NODE_NAME = "v4l2_camera_node"
 
-    CAP_SETTINGS = nepi_nex.TEST_CAP_SETTINGS
     FACTORY_SETTINGS_OVERRIDES = dict( white_balance_temperature_auto = "True",
                                     focus_auto = "True" )
 
@@ -128,7 +127,6 @@ class V4l2CameraNode:
 
 
         # Initialize settings
-
         self.cap_settings = self.getCapSettings()
         self.factory_settings = self.getFactorySettings()
         #Apply factory setting overides
