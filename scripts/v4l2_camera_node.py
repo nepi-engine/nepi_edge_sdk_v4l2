@@ -23,7 +23,9 @@ from nepi_edge_sdk_base import nepi_nex
 class V4l2CameraNode:
     DEFAULT_NODE_NAME = "v4l2_camera_node"
 
-    FACTORY_SETTINGS = nepi_nex.TEST_SETTINGS
+    CAP_SETTINGS = nepi_nex.TEST_CAP_SETTINGS
+    FACTORY_SETTINGS_OVERRIDES = dict( white_balance_temperature_auto = "True",
+                                    focus_auto = "True" )
 
     #Factory Control Values 
     FACTORY_CONTROLS = dict( controls_enable = True,
@@ -124,17 +126,28 @@ class V4l2CameraNode:
         self.current_controls = self.factory_controls # Updateded during initialization
         self.current_fps = self.DEFAULT_CURRENT_FPS # Should be updateded when settings read
 
+
         # Initialize settings
-        self.caps_settings = nepi_nex.TEST_CAP_SETTINGS 
-        self.factory_settings = self.FACTORY_SETTINGS
-        self.current_settings = [] # Updated 
+
+        self.cap_settings = self.getCapSettings()
+        self.factory_settings = self.getFactorySettings()
+        #Apply factory setting overides
         for setting in self.factory_settings:
-          self.settingsUpdateFunction(setting)
+          if setting[1] in self.FACTORY_SETTINGS_OVERRIDES:
+                setting[2] = self.FACTORY_SETTINGS_OVERRIDES[setting[1]]
+                self.factory_settings = nepi_nex.update_setting_in_settings(setting,self.factory_settings)
+        rospy.loginfo("FACTORY SETTINGS")
+        rospy.loginfo(self.factory_settings)
+        for setting in self.factory_settings:
+            self.settingsUpdateFunction(setting)
+        self.current_settings = self.getSettings()
+        rospy.loginfo("NODE INIT SETTINGS")
+        rospy.loginfo(self.current_settings)
 
         # Launch the IDX interface --  this takes care of initializing all the camera settings from config. file
         rospy.loginfo(self.node_name + ": Launching NEPI IDX (ROS) interface...")
         self.idx_if = ROSIDXSensorIF(sensor_name=self.node_name,
-                                     capSettings = self.caps_settings,
+                                     capSettings = self.cap_settings,
                                      factorySettings = self.factory_settings,
                                      settingsUpdateFunction=self.settingsUpdateFunction,
                                      getSettings=self.getSettings,
@@ -173,17 +186,169 @@ class V4l2CameraNode:
         # Now start the node
         rospy.spin()
 
+    #**********************
+    # Sensor setting functions
+
+    def getCapSettings(self):
+        settings = []
+        settings_dict = self.driver.camera_controls
+        for setting_name in settings_dict.keys():
+            info = settings_dict[setting_name]
+            setting_type = info['type']
+            if setting_type == 'int':
+                setting_type = 'Int'
+            elif setting_type == 'float':
+                setting_type = 'Float'
+            elif setting_type == 'bool':
+                setting_type = 'Bool'
+            elif setting_type == 'menu':
+                setting_type = 'Menu'
+            setting = [setting_type,setting_name]
+            if setting_type == 'Float' or setting_type == 'Int':
+                setting_min = str(info['min'])
+                setting_max = str(info['max'])
+                setting.append(setting_min)
+                setting.append(setting_max)
+            elif setting_type == 'Menu':
+                legend = info['legend']
+                for option_name in legend.keys():
+                    option_ind = legend[option_name]
+                    setting.append(option_name + ":" + str(option_ind))
+            settings.append(setting)
+        [success,available_resolutions] = self.driver.getCurrentFormatAvailableResolutions()
+        setting_type = 'Discrete'
+        setting_name = 'resolution'
+        setting=[setting_type,setting_name]
+        for res_dict in available_resolutions:
+            width = str(res_dict['width'])
+            height = str(res_dict['height'])
+            setting_option = (width + ":" + height)
+            setting.append(setting_option)
+        settings.append(setting)
+        return settings
+
+    def getFactorySettings(self):
+        settings = []
+        settings_dict = self.driver.camera_controls
+        for setting_name in settings_dict.keys():
+            info = settings_dict[setting_name]
+            setting_type = info['type']
+            if setting_type == 'int':
+                setting_type = 'Int'
+            elif setting_type == 'float':
+                setting_type = 'Float'
+            elif setting_type == 'bool':
+                setting_type = 'Bool'
+            elif setting_type == 'menu':
+                setting_type = 'Menu'
+            # Create Default Setting
+            if setting_type == 'Menu':
+                setting_default = 'None'
+                default_value = info['default']
+                legend = info['legend']
+                for menu_name in legend.keys():
+                    menu_value = legend[menu_name]
+                    if menu_value == default_value:
+                        setting_default = (menu_name + ":" + str(default_value))
+            else:
+                setting_default = str(info['default'])
+            setting = [setting_type,setting_name,setting_default]
+            settings.append(setting)
+        [success,res_dict] = self.driver.getCurrentResolution()
+        setting_type = 'Discrete'
+        setting_name = 'resolution'
+        setting=[setting_type,setting_name]
+        width = str(res_dict['width'])
+        height = str(res_dict['height'])
+        setting_option = (width + ":" + height)
+        setting.append(setting_option)
+        settings.append(setting)
+        return settings
+            
+
+    def getSettings(self):
+        settings = []
+        settings_dict = self.driver.camera_controls
+        for setting_name in settings_dict.keys():
+            info = settings_dict[setting_name]
+            setting_type = info['type']
+            if setting_type == 'int':
+                setting_type = 'Int'
+            elif setting_type == 'float':
+                setting_type = 'Float'
+            elif setting_type == 'bool':
+                setting_type = 'Bool'
+            elif setting_type == 'menu':
+                setting_type = 'Menu'
+            # Create Current Setting
+            if setting_type == 'Menu':
+                setting_current = 'None'
+                current_value = info['value']
+                legend = info['legend']
+                for menu_name in legend.keys():
+                    menu_value = legend[menu_name]
+                    if menu_value == current_value:
+                        setting_current = (menu_name + ":" + str(current_value))
+            else:
+                setting_current = str(info['value'])
+            setting = [setting_type,setting_name,setting_current]
+            settings.append(setting)
+        [success,res_dict] = self.driver.getCurrentResolution()
+        setting_type = 'Discrete'
+        setting_name = 'resolution'
+        setting=[setting_type,setting_name]
+        width = str(res_dict['width'])
+        height = str(res_dict['height'])
+        setting_option = (width + ":" + height)
+        setting.append(setting_option)
+        settings.append(setting)
+        return settings
+
+    def settingsUpdateFunction(self,setting):
+        success = False
+        setting_str = str(setting)
+        if len(setting) == 3:
+            setting_type = setting[0]
+            setting_name = setting[1]
+            [s_name, s_type, data] = nepi_nex.get_data_from_setting(setting)
+            if data is not None:
+                setting_data = data
+                for cap_setting in self.cap_settings:
+                    if setting_name in cap_setting:
+                        if setting_name != "resolution":
+                            if setting_type == "Bool":
+                                setting_data = int(setting_data)
+                            success, msg = self.driver.setCameraControl(setting_name,setting_data)
+                            if success:
+                                self.driver.camera_controls[setting[1]]['value'] = data
+                                settings_dict = self.driver.camera_controls
+                                msg = ( self.node_name  + " UPDATED SETTINGS " + setting_str)
+                        else:
+                            if data.find("(") == -1 and data.find(")") == -1: # Make sure not a function call
+                                data = data.split(":")
+                                width = int(eval(data[0]))
+                                height = int(eval(data[1]))
+                                res_dict = {'width': width, 'height': height}
+                                success, msg = self.driver.setResolution(res_dict)
+                    else:
+                        msg = (self.node_name  + " Setting name" + setting_str + " is not supported")                   
+                else:
+                    msg = (self.node_name  + " Setting data" + setting_str + " is None")
+        else:
+            msg = (self.node_name  + " Setting " + setting_str + " not correct length")
+        self.current_settings = self.getSettings()
+        return success, msg
+
+    #**********************
+    # IDX driver functions
+
     def logDeviceInfo(self):
         device_info_str = self.node_name + " info:\n"
         device_info_str += "\tDevice Path: " + self.driver.device_path + "\n"
 
-        scalable_cam_controls = self.driver.getAvailableScaledCameraControls()
-        discrete_cam_controls = self.driver.getAvailableDiscreteCameraControls()
-        device_info_str += "\tCamera Controls:\n"
-        for ctl in scalable_cam_controls:
+        controls = self.driver.camera_controls
+        for ctl in controls:
             device_info_str += ("\t\t" + ctl + "\n")
-        for ctl in discrete_cam_controls:
-            device_info_str += ("\t\t" + ctl + ': ' + str(discrete_cam_controls[ctl]) + "\n")
         
         _, format = self.driver.getCurrentFormat()
         device_info_str += "\tCamera Output Format: " + format + "\n"
@@ -203,37 +368,6 @@ class V4l2CameraNode:
         
         rospy.loginfo(device_info_str)
 
-    def getCapSettings(self):
-        cap_settings = nepi_nex.TEST_CAP_SETTINGS #.NONE_SETTINGS
-        # Replace with get cap settings process
-        return cap_settings
-
-    def settingsUpdateFunction(self,setting):
-        success = False
-        self.current_settings = nepi_nex.update_setting_in_settings(setting,self.current_settings)
-        success = True
-        return success
-    
-    def getSettings(self):
-        settings = self.current_settings
-        # Replace with get settings process
-        return settings
-
-    def getCapSettings(self):
-        cap_settings = nepi_nex.TEST_CAP_SETTINGS #.NONE_SETTINGS
-        # Replace with get cap settings process
-        return cap_settings
-
-    def settingsUpdateFunction(self,setting):
-        success = False
-        self.current_settings = nepi_nex.update_setting_in_settings(setting,self.current_settings)
-        success = True
-        return success
-    
-    def getSettings(self):
-        settings = self.current_settings
-        # Replace with get settings process
-        return settings
     
     def setControlsEnable(self, enable):
         self.current_controls["controls_enable"] = enable

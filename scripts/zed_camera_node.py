@@ -45,7 +45,23 @@ from rospy.numpy_msg import numpy_msg
 class ZedCameraNode(object):
     DEFAULT_NODE_NAME = "zed_stereo_camera" # zed replaced with zed_type once discovered
 
-    FACTORY_SETTINGS = nepi_nex.TEST_SETTINGS
+    CAP_SETTINGS = [["Float","pub_frame_rate","0.1","100.0"],
+                    ["Int","depth_confidence","0","100"],
+                    ["depth_texture_conf","0","100"],
+                    ["Int","point_cloud_freq","0.1","100"],
+                    ["Int","brightness","0","8"],
+                    ["Int","contrast","0","8"],
+                    ["Int","hue","0","11"],
+                    ["Int","saturation","0","8"],
+                    ["Int","sharpness","0","8"],
+                    ["Int","gamma","1","9"],
+                    ["Bool","auto_exposure_gain"],
+                    ["Int","gain","0","100"],
+                    ["Int","exposure","0","100"],
+                    ["Bool","auto_whitebalance"],
+                    ["Int","whitebalance_temperature","1","100"]]
+
+    FACTORY_SETTINGS_OVERRIDES = dict( )
     
     #Factory Control Values 
     FACTORY_CONTROLS = dict( controls_enable = True,
@@ -208,18 +224,22 @@ class ZedCameraNode(object):
         self.current_fps = self.DEFAULT_CURRENT_FPS # Should be updateded when settings read
 
         # Initialize settings
-        self.caps_settings = nepi_nex.TEST_CAP_SETTINGS 
-        self.factory_settings = self.FACTORY_SETTINGS
-        self.current_settings = [] # Updated 
+        self.cap_settings = self.CAP_SETTINGS
+        self.factory_settings = self.getSettings()
+        #Apply factory setting overides
         for setting in self.factory_settings:
-          self.settingsUpdateFunction(setting)
+          if setting[1] in self.FACTORY_SETTINGS_OVERRIDES:
+                setting[2] = self.FACTORY_SETTINGS_OVERRIDES[setting[1]]
+                self.factory_settings = nepi_nex.update_setting_in_settings(setting,self.factory_settings)
+        rospy.loginfo( self.zed_type  + " FACTORY SETTINGS")
+        rospy.loginfo( self.factory_settings)
 
         
 
         # Launch the IDX interface --  this takes care of initializing all the camera settings from config. file
         rospy.loginfo(self.node_name + ": Launching NEPI IDX (ROS) interface...")
         self.idx_if = ROSIDXSensorIF(sensor_name=self.node_name,
-                                     capSettings = self.caps_settings,
+                                     capSettings = self.cap_settings,
                                      factorySettings = self.factory_settings,
                                      settingsUpdateFunction=self.settingsUpdateFunction,
                                      getSettings=self.getSettings,
@@ -261,6 +281,46 @@ class ZedCameraNode(object):
 
         # Now start the node
         rospy.spin()
+
+    #**********************
+    # Sensor setting functions
+
+    def getSettings(self):
+      settings = []
+      config_dict = self.zed_dynamic_reconfig_client.get_configuration()
+      if config_dict is not None:
+        for cap_setting in self.cap_settings:
+          setting_type = cap_setting[0]
+          setting_name = cap_setting[1]
+          if setting_name in config_dict.keys():
+            setting_value = config_dict[setting_name]
+            setting = [setting_type,setting_name,str(setting_value)]
+            settings.append(setting)
+      return settings
+
+    def settingsUpdateFunction(self,setting):
+      success = False
+      setting_str = str(setting)
+      if len(setting) == 3:
+        setting_type = setting[0]
+        setting_name = setting[1]
+        [s_name, s_type, data] = nepi_nex.get_data_from_setting(setting)
+        #rospy.loginfo(type(data))
+        if data is not None:
+          setting_data = data
+          config_dict = self.zed_dynamic_reconfig_client.get_configuration()
+          if setting_name in config_dict.keys():
+            self.zed_dynamic_reconfig_client.update_configuration({setting_name:setting_data})
+            success = True
+            msg = ( self.node_name  + " UPDATED SETTINGS " + setting_str)
+          else:
+            msg = (self.node_name  + " Setting name" + setting_str + " is not supported")                   
+        else:
+          msg = (self.node_name  + " Setting data" + setting_str + " is None")
+      else:
+        msg = (self.node_name  + " Setting " + setting_str + " not correct length")
+      return success, msg
+
 
     #**********************
     # Zed camera data callbacks
@@ -317,23 +377,6 @@ class ZedCameraNode(object):
     def logDeviceInfo(self):
         device_info_str = self.node_name + " info:\n"
         rospy.loginfo(device_info_str)
-
-    def getCapSettings(self):
-        cap_settings = nepi_nex.TEST_CAP_SETTINGS #.NONE_SETTINGS
-        # Replace with get cap settings process
-        return cap_settings
-
-    def settingsUpdateFunction(self,setting):
-        success = False
-        self.current_settings = nepi_nex.update_setting_in_settings(setting,self.current_settings)
-        success = True
-        return success
-    
-    def getSettings(self):
-        settings = self.current_settings
-        # Replace with get settings process
-        return settings
-
 
     def setControlsEnable(self, enable):
         self.current_controls["controls_enable"] = enable

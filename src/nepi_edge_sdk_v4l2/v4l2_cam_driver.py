@@ -217,41 +217,10 @@ class V4l2CamDriver(object):
     #print("Debugging (Video Formats): " + str(self.video_formats))
     return True, "Success"
 
-  def getAvailableScaledCameraControls(self):
-    numeric_ctl_list = list()
-    for ctl in self.camera_controls:
-      if self.camera_controls[ctl]['type'] == 'int':
-        numeric_ctl_list.append(ctl)
-
-    return numeric_ctl_list
-  
-  def getAvailableDiscreteCameraControls(self):
-    switched_ctl_dict = dict()
-    for ctl in self.camera_controls:
-      if self.camera_controls[ctl]['type'] == 'bool':
-        switched_ctl_dict[ctl] = ['off', 'on']
-      elif self.camera_controls[ctl]['type'] == 'menu':
-        switched_ctl_dict[ctl] = self.camera_controls[ctl]['legend'].keys()
-
-    return switched_ctl_dict
-
-  def setScaledCameraControl(self, v4l2_setting_name, scaled_val):
-    if scaled_val < 0.0 or scaled_val > 1.0:
-      return False, "Invalid scaled value for " + v4l2_setting_name
-    
+  def setCameraControl(self, v4l2_setting_name, val):
     if not v4l2_setting_name in self.camera_controls:
       return False, "Unavailable setting: " + v4l2_setting_name
-
-    # Converted scaled value to absolute value per setting definition
-    max = self.camera_controls[v4l2_setting_name]['max']
-    min = self.camera_controls[v4l2_setting_name]['min']
-    diff = max - min
-    raw_float = min + (diff*scaled_val)
-    step = self.camera_controls[v4l2_setting_name]['step']
-    raw_step = int(round(raw_float / step)) * step
-
-    stepped_val = raw_step * step
-    p = subprocess.Popen(self.v4l2ctl_prefix + ['--set-ctrl', v4l2_setting_name + '=' + str(stepped_val)],
+    p = subprocess.Popen(self.v4l2ctl_prefix + ['--set-ctrl', v4l2_setting_name + '=' + str(val)],
                            stdout=subprocess.PIPE,
                            stderr=subprocess.STDOUT,
                            text=True)
@@ -260,10 +229,13 @@ class V4l2CamDriver(object):
       return False, "Failed to set camera control to v4l2 device"
     if stdout:
       return False, "v4l2-ctl failed: " + stdout
-    
+    [val_check,msg] = self.getCameraControl(v4l2_setting_name)
+    if val_check != val:
+      return False, ( "Control did not update from " + str(val_check) + " to " + str(val) + " with msg " + msg ) 
+    self.camera_controls[v4l2_setting_name]['value'] = val # Update controls dictionary
     return True, "Success"
 
-  def getScaledCameraControl(self, v4l2_setting_name):
+  def getCameraControl(self, v4l2_setting_name):
     if not v4l2_setting_name in self.camera_controls:
       return False, "Unavailable setting: " + v4l2_setting_name
 
@@ -281,13 +253,8 @@ class V4l2CamDriver(object):
       val_raw = int(string_val_raw)
     except:
       return -1.0, "Failed to convert camera control to numeric value"
-        
-    # Now compute the scaled value
-    max = self.camera_controls[v4l2_setting_name]['max']
-    min = self.camera_controls[v4l2_setting_name]['min']
-    diff = max - min
-    return float(val_raw - min) / float(diff), "Success"
-  
+    return val_raw, "Success"
+
   def hasAdjustableCameraControl(self, v4l2_setting_name):
     if v4l2_setting_name not in self.camera_controls:
       return False
