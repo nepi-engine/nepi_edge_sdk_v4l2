@@ -30,7 +30,7 @@ from nepi_edge_sdk_base import nepi_ros
 from nepi_edge_sdk_base import nepi_nav
 from nepi_edge_sdk_base import nepi_img
 from nepi_edge_sdk_base import nepi_pc
-from nepi_edge_sdk_base import nepi_nex
+from nepi_edge_sdk_base import nepi_idx
 
 from datetime import datetime
 from std_msgs.msg import UInt8, Empty, String, Bool, Float32
@@ -63,6 +63,7 @@ class ZedCameraNode(object):
 
     FACTORY_SETTINGS_OVERRIDES = dict( )
     
+    
     #Factory Control Values 
     FACTORY_CONTROLS = dict( controls_enable = True,
     auto_adjust = False,
@@ -86,6 +87,14 @@ class ZedCameraNode(object):
     zed_type = 'zed'
 
     # Create shared class variables and thread locks 
+    
+    device_info_dict = dict(node_name = "",
+                            sensor_name = "",
+                            identifier = "",
+                            serial_number = "",
+                            hw_version = "",
+                            sw_version = "")
+    
     color_img_msg = None
     color_img_last_stamp = None
     color_img_lock = threading.Lock()
@@ -154,7 +163,7 @@ class ZedCameraNode(object):
 
 
 
-        # Wait for zed camera topic to publish, then subscribe
+        # Wait for zed camera topic to publish, then subscribeCAPS SETTINGS
         rospy.loginfo("Waiting for topic: " + ZED_COLOR_2D_IMAGE_TOPIC)
         nepi_ros.wait_for_topic(ZED_COLOR_2D_IMAGE_TOPIC)
 
@@ -224,25 +233,30 @@ class ZedCameraNode(object):
         self.current_fps = self.DEFAULT_CURRENT_FPS # Should be updateded when settings read
 
         # Initialize settings
-        self.cap_settings = self.CAP_SETTINGS
-        self.factory_settings = self.getSettings()
-        #Apply factory setting overides
-        for setting in self.factory_settings:
-          if setting[1] in self.FACTORY_SETTINGS_OVERRIDES:
-                setting[2] = self.FACTORY_SETTINGS_OVERRIDES[setting[1]]
-                self.factory_settings = nepi_nex.update_setting_in_settings(setting,self.factory_settings)
-        rospy.loginfo( self.zed_type  + " FACTORY SETTINGS")
-        rospy.loginfo( self.factory_settings)
-
-        
+        self.cap_settings = self.getCapSettings()
+        rospy.loginfo("CAPS SETTINGS")
+        #for setting in self.cap_settings:
+            #rospy.loginfo(setting)
+        self.factory_settings = self.getFactorySettings()
+        rospy.loginfo("FACTORY SETTINGS")
+        #for setting in self.factory_settings:
+            #rospy.loginfo(setting)
+             
 
         # Launch the IDX interface --  this takes care of initializing all the camera settings from config. file
         rospy.loginfo(self.node_name + ": Launching NEPI IDX (ROS) interface...")
-        self.idx_if = ROSIDXSensorIF(sensor_name=self.node_name,
+        self.device_info_dict["node_name"] = self.node_name
+        if self.node_name.find("_") != -1:
+            split_name = self.node_name.rsplit('_', 1)
+            self.device_info_dict["sensor_name"] = split_name[0]
+            self.device_info_dict["identifier"] = split_name[1]
+        else:
+            self.device_info_dict["sensor_name"] = self.node_name
+        self.idx_if = ROSIDXSensorIF(device_info = self.device_info_dict,
                                      capSettings = self.cap_settings,
                                      factorySettings = self.factory_settings,
-                                     settingsUpdateFunction=self.settingsUpdateFunction,
-                                     getSettings=self.getSettings,
+                                     settingUpdateFunction=self.settingUpdateFunction,
+                                     getSettingsFunction=self.getSettings,
                                      factoryControls = self.FACTORY_CONTROLS,
                                      setControlsEnable = idx_callback_names["Controls"]["Controls_Enable"],
                                      setAutoAdjust= idx_callback_names["Controls"]["Auto_Adjust"],
@@ -284,6 +298,18 @@ class ZedCameraNode(object):
 
     #**********************
     # Sensor setting functions
+    def getCapSettings(self):
+      return self.CAP_SETTINGS
+
+    def getFactorySettings(self):
+      settings = self.getSettings()
+      #Apply factory setting overides
+      for setting in settings:
+        if setting[1] in self.FACTORY_SETTINGS_OVERRIDES:
+              setting[2] = self.FACTORY_SETTINGS_OVERRIDES[setting[1]]
+              settings = nepi_ros.update_setting_in_settings(setting,settings)
+      return settings
+
 
     def getSettings(self):
       settings = []
@@ -298,13 +324,13 @@ class ZedCameraNode(object):
             settings.append(setting)
       return settings
 
-    def settingsUpdateFunction(self,setting):
+    def settingUpdateFunction(self,setting):
       success = False
       setting_str = str(setting)
       if len(setting) == 3:
         setting_type = setting[0]
         setting_name = setting[1]
-        [s_name, s_type, data] = nepi_nex.get_data_from_setting(setting)
+        [s_name, s_type, data] = nepi_ros.get_data_from_setting(setting)
         #rospy.loginfo(type(data))
         if data is not None:
           setting_data = data
@@ -487,7 +513,7 @@ class ZedCameraNode(object):
             ros_timestamp = img_msg.header.stamp
             if self.current_controls.get("controls_enable"):
               cv2_img =  nepi_img.rosimg_to_cv2img(img_msg, encoding = encoding)
-              cv2_img = nepi_nex.applyIDXControls2Image(cv2_img,self.current_controls,self.current_fps)
+              cv2_img = nepi_idx.applyIDXControls2Image(cv2_img,self.current_controls,self.current_fps)
               #img_msg = nepi_img.cv2img_to_rosimg(cv2_img, encoding = encoding)
             self.color_img_last_stamp = ros_timestamp
           else:
@@ -531,7 +557,7 @@ class ZedCameraNode(object):
             ros_timestamp = img_msg.header.stamp
             if self.current_controls.get("controls_enable"):
               cv2_img =  nepi_img.rosimg_to_cv2img(img_msg, encoding = encoding)
-              cv2_img = nepi_nex.applyIDXControls2Image(cv2_img,self.current_controls,self.current_fps)
+              cv2_img = nepi_idx.applyIDXControls2Image(cv2_img,self.current_controls,self.current_fps)
               #img_msg = nepi_img.cv2img_to_rosimg(cv2_img, encoding = encoding)
             self.bw_img_last_stamp = ros_timestamp
           else:
@@ -721,6 +747,7 @@ class ZedCameraNode(object):
         data_product = "pointcloud_image"
         self.pc_img_lock.acquire()
         pc_msg = None
+        encoding = 'passthrough'
         if self.pc_img_msg != None:
           if self.pc_img_msg.header.stamp != self.pc_img_last_stamp:
             pc_msg = copy.deepcopy(self.pc_img_msg)
@@ -774,8 +801,9 @@ class ZedCameraNode(object):
               o3d_pc = nepi_pc.rotate_pc(o3d_pc, tilt_vector)
             
             if self.img_renderer is not None and self.img_renderer_mtl is not None:
-              o3d_img = nepi_pc.render_img(o3d_pc,self.img_renderer,self.img_renderer_mtl,
-                                      render_center,render_eye,render_up)
+              self.img_renderer = nepi_pc.remove_img_renderer_geometry(self.img_renderer)
+              self.img_renderer = nepi_pc.add_img_renderer_geometry(o3d_pc,self.img_renderer, self.img_renderer_mtl)
+              o3d_img = nepi_pc.render_img(self.img_renderer,render_center,render_eye,render_up)
               ros_img = nepi_pc.o3dimg_to_rosimg(o3d_img, stamp=ros_timestamp, frame_id=ros_frame)
             else:
               # Create point cloud renderer
@@ -786,7 +814,7 @@ class ZedCameraNode(object):
             msg = "No new data for " + data_product + " available"
         else:
           msg = "Received None type data for " + data_product + " process"
-        return status, msg, ros_img, ros_timestamp, ros_frame
+        return status, msg, ros_img, ros_timestamp,  encoding
 
     
     def stopPointcloudImg(self):

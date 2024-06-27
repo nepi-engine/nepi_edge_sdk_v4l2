@@ -217,10 +217,19 @@ class V4l2CamDriver(object):
     #print("Debugging (Video Formats): " + str(self.video_formats))
     return True, "Success"
 
-  def setCameraControl(self, v4l2_setting_name, val):
-    if not v4l2_setting_name in self.camera_controls:
-      return False, "Unavailable setting: " + v4l2_setting_name
-    p = subprocess.Popen(self.v4l2ctl_prefix + ['--set-ctrl', v4l2_setting_name + '=' + str(val)],
+
+  def getCameraControls(self):
+    return self.camera_controls
+
+  def setCameraControl(self, setting_name, val):
+    if not setting_name in self.camera_controls:
+      return False, "Unavailable setting: " + setting_name
+    if self.camera_controls[setting_name]['type'] == 'bool':
+      new_val = int(val)
+    else:
+      new_val = val
+
+    p = subprocess.Popen(self.v4l2ctl_prefix + ['--set-ctrl', setting_name + '=' + str(new_val)],
                            stdout=subprocess.PIPE,
                            stderr=subprocess.STDOUT,
                            text=True)
@@ -229,17 +238,17 @@ class V4l2CamDriver(object):
       return False, "Failed to set camera control to v4l2 device"
     if stdout:
       return False, "v4l2-ctl failed: " + stdout
-    [val_check,msg] = self.getCameraControl(v4l2_setting_name)
-    if val_check != val:
+    [val_check,msg] = self.getCameraControl(setting_name)
+    if val_check != new_val:
       return False, ( "Control did not update from " + str(val_check) + " to " + str(val) + " with msg " + msg ) 
-    self.camera_controls[v4l2_setting_name]['value'] = val # Update controls dictionary
+    self.camera_controls[setting_name]['value'] = val # Update controls dictionary
     return True, "Success"
 
-  def getCameraControl(self, v4l2_setting_name):
-    if not v4l2_setting_name in self.camera_controls:
-      return False, "Unavailable setting: " + v4l2_setting_name
+  def getCameraControl(self, setting_name):
+    if not setting_name in self.camera_controls:
+      return False, "Unavailable setting: " + setting_name
 
-    p = subprocess.Popen(self.v4l2ctl_prefix + ['--get-ctrl', v4l2_setting_name],
+    p = subprocess.Popen(self.v4l2ctl_prefix + ['--get-ctrl', setting_name],
                            stdout=subprocess.PIPE,
                            stderr=subprocess.STDOUT,
                            text=True)
@@ -247,16 +256,18 @@ class V4l2CamDriver(object):
     if p.returncode != 0:
       return -1.0, "Failed to get camera control value from v4l2 device"
 
-    val_raw = 0
+    val = 0
     try:
-      string_val_raw = stdout.split(':')[1]
-      val_raw = int(string_val_raw)
+      string_val = stdout.split(':')[1]
+      val = int(string_val)
     except:
       return -1.0, "Failed to convert camera control to numeric value"
-    return val_raw, "Success"
+    if self.camera_controls[setting_name]['type'] == 'bool':
+      val = bool(val)
+    return val, "Success"
 
-  def hasAdjustableCameraControl(self, v4l2_setting_name):
-    if v4l2_setting_name not in self.camera_controls:
+  def hasAdjustableCameraControl(self, setting_name):
+    if setting_name not in self.camera_controls:
       return False
     
     return True

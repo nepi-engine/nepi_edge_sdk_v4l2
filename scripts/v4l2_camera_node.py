@@ -17,8 +17,9 @@ import cv2
 from nepi_edge_sdk_base.idx_sensor_if import ROSIDXSensorIF
 from nepi_edge_sdk_v4l2.v4l2_cam_driver import V4L2_GENERIC_DRIVER_ID, V4l2CamDriver
 
+from nepi_edge_sdk_base import nepi_ros
 from nepi_edge_sdk_base import nepi_img
-from nepi_edge_sdk_base import nepi_nex
+from nepi_edge_sdk_base import nepi_idx
 
 class V4l2CameraNode:
     DEFAULT_NODE_NAME = "v4l2_camera_node"
@@ -44,6 +45,14 @@ class V4l2CameraNode:
     DEFAULT_CURRENT_FPS = 20 # Will be update later with actual
 
     DRIVER_SPECIALIZATION_CONSTRUCTORS = {V4L2_GENERIC_DRIVER_ID: V4l2CamDriver} # Only the generic on at the moment
+
+    device_info_dict = dict(node_name = "",
+                            sensor_name = "",
+                            identifier = "",
+                            serial_number = "",
+                            hw_version = "",
+                            sw_version = "")
+
 
     # Create threading locks, controls, and status
     img_lock = threading.Lock()
@@ -128,27 +137,29 @@ class V4l2CameraNode:
 
         # Initialize settings
         self.cap_settings = self.getCapSettings()
+        rospy.loginfo("CAPS SETTINGS")
+        #for setting in self.cap_settings:
+            #rospy.loginfo(setting)
         self.factory_settings = self.getFactorySettings()
-        #Apply factory setting overides
-        for setting in self.factory_settings:
-          if setting[1] in self.FACTORY_SETTINGS_OVERRIDES:
-                setting[2] = self.FACTORY_SETTINGS_OVERRIDES[setting[1]]
-                self.factory_settings = nepi_nex.update_setting_in_settings(setting,self.factory_settings)
         rospy.loginfo("FACTORY SETTINGS")
-        rospy.loginfo(self.factory_settings)
-        for setting in self.factory_settings:
-            self.settingsUpdateFunction(setting)
-        self.current_settings = self.getSettings()
-        rospy.loginfo("NODE INIT SETTINGS")
-        rospy.loginfo(self.current_settings)
+        #for setting in self.factory_settings:
+            #rospy.loginfo(setting)
+
 
         # Launch the IDX interface --  this takes care of initializing all the camera settings from config. file
         rospy.loginfo(self.node_name + ": Launching NEPI IDX (ROS) interface...")
-        self.idx_if = ROSIDXSensorIF(sensor_name=self.node_name,
+        self.device_info_dict["node_name"] = self.node_name
+        if self.node_name.find("_") != -1:
+            split_name = self.node_name.rsplit('_', 1)
+            self.device_info_dict["sensor_name"] = split_name[0]
+            self.device_info_dict["identifier"] = split_name[1]
+        else:
+            self.device_info_dict["sensor_name"] = self.node_name
+        self.idx_if = ROSIDXSensorIF(device_info = self.device_info_dict,
                                      capSettings = self.cap_settings,
                                      factorySettings = self.factory_settings,
-                                     settingsUpdateFunction=self.settingsUpdateFunction,
-                                     getSettings=self.getSettings,
+                                     settingUpdateFunction=self.settingUpdateFunction,
+                                     getSettingsFunction=self.getSettings,
                                      factoryControls = self.FACTORY_CONTROLS,
                                      setControlsEnable = idx_callback_names["Controls"]["Controls_Enable"],
                                      setAutoAdjust= idx_callback_names["Controls"]["Auto_Adjust"],
@@ -189,9 +200,9 @@ class V4l2CameraNode:
 
     def getCapSettings(self):
         settings = []
-        settings_dict = self.driver.camera_controls
-        for setting_name in settings_dict.keys():
-            info = settings_dict[setting_name]
+        controls_dict = self.driver.getCameraControls()
+        for setting_name in controls_dict.keys():
+            info = controls_dict[setting_name]
             setting_type = info['type']
             if setting_type == 'int':
                 setting_type = 'Int'
@@ -227,9 +238,9 @@ class V4l2CameraNode:
 
     def getFactorySettings(self):
         settings = []
-        settings_dict = self.driver.camera_controls
-        for setting_name in settings_dict.keys():
-            info = settings_dict[setting_name]
+        controls_dict = self.driver.getCameraControls()
+        for setting_name in controls_dict.keys():
+            info = controls_dict[setting_name]
             setting_type = info['type']
             if setting_type == 'int':
                 setting_type = 'Int'
@@ -239,15 +250,15 @@ class V4l2CameraNode:
                 setting_type = 'Bool'
             elif setting_type == 'menu':
                 setting_type = 'Menu'
-            # Create Default Setting
+            # Create Menu Setting
             if setting_type == 'Menu':
                 setting_default = 'None'
-                default_value = info['default']
+                setting_value = info['default']
                 legend = info['legend']
                 for menu_name in legend.keys():
                     menu_value = legend[menu_name]
-                    if menu_value == default_value:
-                        setting_default = (menu_name + ":" + str(default_value))
+                    if menu_value == setting_value:
+                        setting_default = (menu_name + ":" + str(setting_value))
             else:
                 setting_default = str(info['default'])
             setting = [setting_type,setting_name,setting_default]
@@ -261,14 +272,22 @@ class V4l2CameraNode:
         setting_option = (width + ":" + height)
         setting.append(setting_option)
         settings.append(setting)
+        #Apply factory setting overides
+        for setting in settings:
+            if setting[1] in self.FACTORY_SETTINGS_OVERRIDES:
+                setting[2] = self.FACTORY_SETTINGS_OVERRIDES[setting[1]]
+                settings = nepi_ros.update_setting_in_settings(setting,settings)
         return settings
             
 
     def getSettings(self):
         settings = []
-        settings_dict = self.driver.camera_controls
-        for setting_name in settings_dict.keys():
-            info = settings_dict[setting_name]
+        controls_dict = self.driver.getCameraControls()
+        #for key in controls_dict.keys():
+            #string = str(controls_dict[key])
+            #rospy.loginfo(key + " " + string)
+        for setting_name in controls_dict.keys():
+            info = controls_dict[setting_name]
             setting_type = info['type']
             if setting_type == 'int':
                 setting_type = 'Int'
@@ -281,12 +300,12 @@ class V4l2CameraNode:
             # Create Current Setting
             if setting_type == 'Menu':
                 setting_current = 'None'
-                current_value = info['value']
+                setting_value = info['value']
                 legend = info['legend']
                 for menu_name in legend.keys():
                     menu_value = legend[menu_name]
-                    if menu_value == current_value:
-                        setting_current = (menu_name + ":" + str(current_value))
+                    if menu_value == setting_value:
+                        setting_current = (menu_name + ":" + str(setting_value))
             else:
                 setting_current = str(info['value'])
             setting = [setting_type,setting_name,setting_current]
@@ -302,24 +321,22 @@ class V4l2CameraNode:
         settings.append(setting)
         return settings
 
-    def settingsUpdateFunction(self,setting):
+    def settingUpdateFunction(self,setting):
         success = False
         setting_str = str(setting)
         if len(setting) == 3:
             setting_type = setting[0]
             setting_name = setting[1]
-            [s_name, s_type, data] = nepi_nex.get_data_from_setting(setting)
+            [s_name, s_type, data] = nepi_ros.get_data_from_setting(setting)
             if data is not None:
                 setting_data = data
+                found_setting = False
                 for cap_setting in self.cap_settings:
                     if setting_name in cap_setting:
+                        found_setting = True
                         if setting_name != "resolution":
-                            if setting_type == "Bool":
-                                setting_data = int(setting_data)
                             success, msg = self.driver.setCameraControl(setting_name,setting_data)
                             if success:
-                                self.driver.camera_controls[setting[1]]['value'] = data
-                                settings_dict = self.driver.camera_controls
                                 msg = ( self.node_name  + " UPDATED SETTINGS " + setting_str)
                         else:
                             if data.find("(") == -1 and data.find(")") == -1: # Make sure not a function call
@@ -328,13 +345,15 @@ class V4l2CameraNode:
                                 height = int(eval(data[1]))
                                 res_dict = {'width': width, 'height': height}
                                 success, msg = self.driver.setResolution(res_dict)
-                    else:
-                        msg = (self.node_name  + " Setting name" + setting_str + " is not supported")                   
-                else:
-                    msg = (self.node_name  + " Setting data" + setting_str + " is None")
+                            else:
+                                msg = (self.node_name  + " Setting value" + setting_str + " contained () chars") 
+                            break     
+                if found_setting is False:
+                    msg = (self.node_name  + " Setting name" + setting_str + " is not supported")                 
+            else:
+                msg = (self.node_name  + " Setting data" + setting_str + " is None")
         else:
             msg = (self.node_name  + " Setting " + setting_str + " not correct length")
-        self.current_settings = self.getSettings()
         return success, msg
 
     #**********************
@@ -344,10 +363,14 @@ class V4l2CameraNode:
         device_info_str = self.node_name + " info:\n"
         device_info_str += "\tDevice Path: " + self.driver.device_path + "\n"
 
-        controls = self.driver.camera_controls
-        for ctl in controls:
-            device_info_str += ("\t\t" + ctl + "\n")
+        controls_dict = self.driver.getCameraControls()
+        for key in controls_dict.keys():
+            string = str(controls_dict[key])
+            rospy.loginfo(key + " " + string)
         
+
+
+
         _, format = self.driver.getCurrentFormat()
         device_info_str += "\tCamera Output Format: " + format + "\n"
 
@@ -438,7 +461,7 @@ class V4l2CameraNode:
         ret, msg = self.driver.startImageAcquisition()
         if ret is False:
             self.img_lock.release()
-            return ret, msg, None, None
+            return ret, msg, None, None, None
         
         self.color_image_acquisition_running = True
 
@@ -459,7 +482,7 @@ class V4l2CameraNode:
         
         # Apply controls
         if self.current_controls.get("controls_enable") and cv2_img is not None:
-          cv2_img = nepi_nex.applyIDXControls2Image(cv2_img,self.current_controls,self.current_fps)
+          cv2_img = nepi_idx.applyIDXControls2Image(cv2_img,self.current_controls,self.current_fps)
 
         # Make a copy for the bw thread to use rather than grabbing a new image
         if self.bw_image_acquisition_running:
@@ -492,7 +515,7 @@ class V4l2CameraNode:
         ret, msg = self.driver.startImageAcquisition()
         if ret is False:
             self.img_lock.release()
-            return ret, msg, None, None
+            return ret, msg, None, None, None
         
         self.bw_image_acquisition_running = True
 
@@ -509,7 +532,7 @@ class V4l2CameraNode:
                 ros_timestamp = rospy.Time.now()
             # Apply controls
             if self.current_controls.get("controls_enable") and cv2_img is not None:
-                cv2_img = nepi_nex.applyIDXControls2Image(cv2_img,self.current_controls,self.current_fps)
+                cv2_img = nepi_idx.applyIDXControls2Image(cv2_img,self.current_controls,self.current_fps)
         else:
             #rospy.logwarn("Debugging: getBWImg reusing")
             cv2_img = self.cached_2d_color_image.copy()
